@@ -292,25 +292,31 @@ export default class Subtitles {
   }
 
   async initSubtitleRenderer () {
-    if (this.jassub) return
+    if (this.jassub) { console.log('[subs] initSubtitleRenderer: already exists'); return }
 
-    this.jassub = new JASSUB({
-      video: this.video,
-      canvas: this.canvas!,
-      subContent: defaultHeader,
-      fonts: this.fonts,
-      maxRenderHeight: parseInt(this.set.subtitleRenderHeight) || 0,
-      defaultFont: STYLE_OVERRIDES[this.set.subtitleStyle].FontName,
-      queryFonts: 'localandremote',
-      workerUrl,
-      modernWasmUrl,
-      wasmUrl,
-      availableFonts: AVAILABLE_FONTS
-    })
+    console.log('[subs] initSubtitleRenderer: creating JASSUB, canvas=', this.canvas)
+    try {
+      this.jassub = new JASSUB({
+        video: this.video,
+        canvas: this.canvas!,
+        subContent: defaultHeader,
+        fonts: this.fonts,
+        maxRenderHeight: parseInt(this.set.subtitleRenderHeight) || 0,
+        defaultFont: STYLE_OVERRIDES[this.set.subtitleStyle].FontName,
+        queryFonts: 'localandremote',
+        workerUrl,
+        modernWasmUrl,
+        wasmUrl,
+        availableFonts: AVAILABLE_FONTS
+      })
 
-    await this.jassub.ready
+      await this.jassub.ready
+      console.log('[subs] initSubtitleRenderer: ready')
 
-    await this._applyStyleOverride(this.set.subtitleStyle)
+      await this._applyStyleOverride(this.set.subtitleStyle)
+    } catch (e) {
+      console.error('[subs] initSubtitleRenderer FAILED:', e)
+    }
   }
 
   lastSubtitleStyle: typeof defaults.subtitleStyle | undefined = undefined
@@ -391,32 +397,41 @@ export default class Subtitles {
   }
 
   async selectCaptions (trackNumber: number | string) {
-    console.log('[subs] selectCaptions:', trackNumber, 'events:', this._tracks.value[trackNumber]?.events.size)
+    console.log('[subs] selectCaptions:', trackNumber, 'jassub=', !!this.jassub, 'events=', this._tracks.value[trackNumber]?.events.size)
     this.current.value = trackNumber
 
-    if (!this.jassub) return
-
-    await this.jassub.ready
-    if (trackNumber === -1) {
-      await this.jassub.renderer.setTrack(defaultHeader)
-      return await this.jassub.resize()
+    if (!this.jassub) {
+      console.log('[subs] selectCaptions: no jassub, initializing')
+      await this.initSubtitleRenderer()
     }
+    if (!this.jassub) { console.error('[subs] selectCaptions: jassub still null'); return }
 
-    const track = this._tracks.value[trackNumber]
-    if (!track) return
+    try {
+      await this.jassub.ready
+      if (trackNumber === -1) {
+        await this.jassub.renderer.setTrack(defaultHeader)
+        return await this.jassub.resize()
+      }
 
-    lastSelectedTrack = track.meta
+      const track = this._tracks.value[trackNumber]
+      if (!track) { console.error('[subs] selectCaptions: track not found', trackNumber); return }
 
-    await this.jassub.renderer.setTrack(track.meta.header?.slice(0, -1) || defaultHeader)
+      lastSelectedTrack = track.meta
 
-    // If the clicked track has no cues (e.g. track numbers from the demuxer
-    // didn't match the UI list), fall back to rendering cues stored under any
-    // other track so subtitles still appear instead of a blank screen.
-    const eventsToRender = track.events.size ? track.events : Object.values(this._tracks.value).find(t => t.events.size)?.events
-    if (eventsToRender) {
-      for (const { text, duration, time } of eventsToRender.values()) await this.jassub.renderer.processChunk(text, time, duration)
-    }
-    const lang = track.meta.language
+      await this.jassub.renderer.setTrack(track.meta.header?.slice(0, -1) || defaultHeader)
+      console.log('[subs] selectCaptions: setTrack done, processing cues')
+
+      // If the clicked track has no cues (e.g. track numbers from the demuxer
+      // didn't match the UI list), fall back to rendering cues stored under any
+      // other track so subtitles still appear instead of a blank screen.
+      const eventsToRender = track.events.size ? track.events : Object.values(this._tracks.value).find(t => t.events.size)?.events
+      if (eventsToRender) {
+        for (const { text, duration, time } of eventsToRender.values()) {
+          try { await this.jassub.renderer.processChunk(text, time, duration) }
+          catch (e) { console.error('[subs] processChunk failed:', e, text?.slice?.(0, 80)) }
+        }
+      }
+      const lang = track.meta.language
     if (LANGUAGE_OVERRIDES[lang]) {
       const name = LANGUAGE_OVERRIDES[lang]
       await this.jassub.renderer.setDefaultFont(name)
@@ -424,6 +439,9 @@ export default class Subtitles {
       await this.jassub.renderer.setDefaultFont('roboto medium')
     }
     await this.jassub.resize()
+    } catch (e) {
+      console.error('[subs] selectCaptions FAILED:', e)
+    }
   }
 
   destroy () {
