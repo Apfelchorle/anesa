@@ -1,0 +1,210 @@
+import ChromeCast from './chromecast.ts'
+import SUPPORTS from './settings/supports'
+
+import type { AuthResponse, LibraryEntry, Native, TorrentInfo } from 'native'
+
+import { dev } from '$app/env'
+
+const dummyFiles = [
+  {
+    name: 'AmebkuUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUUU.webm',
+    hash: '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+    type: 'video/webm',
+    size: 1234567890,
+    path: '/Amebku.webm',
+    url: 'https://remotion.media/video-30m.mp4',
+    lan: 'https://remotion.media/video-30m.mp4',
+    // url: 'http://localhost:7344/video2.mkv',
+    // lan: 'http://localhost:7344/video2.mkv',
+    id: 0
+  }
+// {
+//   name: 'My Happy Marriage Season 2.mkv',
+//   hash: '1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
+//   type: 'video/mkv',
+//   size: 1234567890,
+//   path: '/video.mkv',
+//   url: '/video.mkv',
+//   id: 1
+// }
+]
+
+// Placeholder background downloads that only appear in development.
+const dummyTorrents: TorrentInfo[] = dev
+  ? [
+      { name: 'Sousou no Frieren - 28.mkv', progress: 1, size: { total: 1_400_000_000, downloaded: 1_400_000_000, uploaded: 88_000_000 }, speed: { down: 0, up: 240_000 }, time: { remaining: 0, elapsed: 5_400_000 }, peers: { seeders: 41, leechers: 1, wires: 42 }, pieces: { total: 2100, size: 524_288 }, hash: '2b3f7c1d9a4e5f6081b2c3d4e5f60718293a4b5c' },
+      { name: 'Sousou no Frieren - 26.mkv', progress: 1, size: { total: 1_400_000_000, downloaded: 1_400_000_000, uploaded: 88_000_000 }, speed: { down: 0, up: 240_000 }, time: { remaining: 0, elapsed: 5_400_000 }, peers: { seeders: 41, leechers: 1, wires: 42 }, pieces: { total: 2100, size: 524_288 }, hash: '2b3f7c1d9a4e5f6081b2c3d4e5f60718293a4b5e' },
+      { name: 'Sousou no Frieren - 24.mkv', progress: 1, size: { total: 1_400_000_000, downloaded: 1_400_000_000, uploaded: 88_000_000 }, speed: { down: 0, up: 240_000 }, time: { remaining: 0, elapsed: 5_400_000 }, peers: { seeders: 41, leechers: 1, wires: 42 }, pieces: { total: 2100, size: 524_288 }, hash: '2b3f7c1d9a4e5f6081b2c3d4e5f60718293a4b5f' },
+      { name: 'Ore dake Level Up na Ken - 01.mkv', progress: 0.42, size: { total: 2_600_000_000, downloaded: 1_092_000_000, uploaded: 120_000 }, speed: { down: 4_200_000, up: 120_000 }, time: { remaining: 360_000, elapsed: 900_000 }, peers: { seeders: 24, leechers: 3, wires: 27 }, pieces: { total: 4200, size: 524_288 }, hash: '6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e' },
+      { name: 'Dandadan - 07.mkv', progress: 0.08, size: { total: 1_900_000_000, downloaded: 152_000_000, uploaded: 0 }, speed: { down: 180_000, up: 0 }, time: { remaining: 9_600_000, elapsed: 60_000 }, peers: { seeders: 2, leechers: 9, wires: 11 }, pieces: { total: 3600, size: 524_288 }, hash: 'f0e1d2c3b4a5968778695a4b3c2d1e0f1a2b3c4d' }
+    ]
+  : []
+
+const dummyLibrary: LibraryEntry[] = dev
+  ? [
+      { mediaID: 154587, episode: 28, files: 1, hash: '2b3f7c1d9a4e5f6081b2c3d4e5f60718293a4b5c', progress: 1, date: Date.now(), size: 1_400_000_000, name: 'Sousou no Frieren - 28.mkv' },
+      { mediaID: 154587, episode: 26, files: 1, hash: '2b3f7c1d9a4e5f6081b2c3d4e5f60718293a4b5e', progress: 1, date: Date.now(), size: 1_400_000_000, name: 'Sousou no Frieren - 26.mkv' },
+      { mediaID: 154587, episode: 24, files: 1, hash: '2b3f7c1d9a4e5f6081b2c3d4e5f60718293a4b5f', progress: 1, date: Date.now(), size: 1_400_000_000, name: 'Sousou no Frieren - 24.mkv' },
+      { mediaID: 151807, episode: 1, files: 3, hash: '6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e', progress: 0.42, date: Date.now(), size: 2_600_000_000, name: 'Ore dake Level Up na Ken - 01.mkv' },
+      { mediaID: 171018, episode: 7, files: 2, hash: 'f0e1d2c3b4a5968778695a4b3c2d1e0f1a2b3c4d', progress: 0.08, date: Date.now(), size: 1_900_000_000, name: 'Dandadan - 07.mkv' }
+    ]
+  : []
+
+// function makeRandomPeer (): PeerInfo {
+//   const ip = `${rnd(256)}.${rnd(256)}.${rnd(256)}.${rnd(256)}:${rnd(65536)}`
+//   return {
+//     ip,
+//     seeder: Math.random() < 0.5,
+//     client: ['qBittorrent 4.5.4', 'WebTorrent 1.0.0', 'Transmission 3.00', 'Deluge 2.1.1', 'μTorrent 3.5.5', 'Vuze 5.7.7.0', 'Azureus 5.7.6.0'].sort(() => Math.random() - 0.5)[0]!,
+//     progress: Math.random(),
+//     size: {
+//       downloaded: rnd(1000000),
+//       uploaded: rnd(1000000)
+//     },
+//     speed: {
+//       down: rnd(1000),
+//       up: rnd(1000)
+//     },
+//     time: rnd(1000),
+//     flags: (['encrypted', 'utp', 'incoming', 'outgoing'] as const).filter(() => Math.random() < 0.5).slice(0, 3)
+//   }
+// }
+// const dummyPeerInfo: PeerInfo[] = []
+// for (let i = 0; i < 100; i++) {
+//   dummyPeerInfo.push(makeRandomPeer())
+// }
+
+function makeAuth<T> (popup: Window | null, callback: (data: string) => T | undefined) {
+  return new Promise<T>((resolve, reject) => {
+    if (!popup) return reject(new Error('Failed to open popup'))
+    const destroy = (err: Error) => {
+      channel.close()
+      clearTimeout(timeout)
+      reject(err)
+      popup.close()
+    }
+    const timeout = setTimeout(() => destroy(new Error('Authentication timed out')), 5 * 60 * 1000) // 5 minutes
+    const channel = new BroadcastChannel('hayase-auth')
+    channel.onmessage = ({ data }) => {
+      const res = callback(data)
+      if (!res) return
+      resolve(res)
+      destroy(new Error('Authentication succeeded'))
+    }
+  })
+}
+
+export default Object.assign<Native, Partial<Native>>({
+  authAL: (url: string) => {
+    return makeAuth(
+      open(url, 'authframe', SUPPORTS.isAndroid ? 'popup' : 'popup,width=382,height=582'),
+      search => {
+        if (search.includes('access_token=')) {
+          return Object.fromEntries(new URLSearchParams(search).entries()) as unknown as AuthResponse
+        }
+      }
+    )
+  },
+  authMAL: (url: string) => {
+    return makeAuth(
+      open(url, 'authframe', SUPPORTS.isAndroid ? 'popup' : 'popup,width=540,height=782'),
+      search => {
+        if (search.startsWith('?code=')) {
+          return Object.fromEntries(new URLSearchParams(search).entries()) as unknown as { code: string, state: string }
+        }
+      }
+    )
+  },
+  restart: async () => location.reload(),
+  openURL: async (url: string) => { open(url) },
+  selectPlayer: async () => 'mpv',
+  selectDownload: async () => '/tmp/webtorrent',
+  share: (...args) => navigator.share(...args),
+  setAngle: async () => undefined,
+  getLogs: async () => '',
+  getDeviceInfo: async () => ({}),
+  openUIDevtools: async () => undefined,
+  openTorrentDevtools: async () => undefined,
+  minimise: async () => undefined,
+  maximise: async () => undefined,
+  focus: async () => window.focus(),
+  close: async () => window.close(),
+  checkUpdate: async () => undefined,
+  updateAndRestart: async () => undefined,
+  updateReady: async () => undefined,
+  toggleDiscordDetails: async () => undefined,
+  unsafeUseInternalALAPI: async () => undefined,
+  setMediaSession: async (metadata) => { navigator.mediaSession.metadata = new MediaMetadata({ title: metadata.title, artist: metadata.description, artwork: [{ src: metadata.image }] }) },
+  setPositionState: async e => navigator.mediaSession.setPositionState(e),
+  setPlayBackState: async e => { navigator.mediaSession.playbackState = e },
+  setActionHandler: async (...args) => navigator.mediaSession.setActionHandler(...args as [action: MediaSessionAction, handler: MediaSessionActionHandler | null]),
+  checkAvailableSpace: () => new Promise(resolve => setTimeout(() => resolve(Math.floor(Math.random() * (1e10 - 1e8 + 1) + 1e8)), 1000)),
+  checkIncomingConnections: () => new Promise(resolve => setTimeout(() => resolve(false), 1000)),
+  updatePeerCounts: async () => [],
+  isApp: undefined,
+  addTorrent: async () => dummyFiles,
+  activeTorrents: async () => dummyTorrents,
+  rescanTorrents: async () => undefined,
+  deleteTorrents: async () => undefined,
+  removeBackgroundTorrents: async () => undefined,
+  library: async () => dummyLibrary,
+  attachments: async () => [],
+  tracks: async () => [],
+  subtitles: async () => undefined,
+  chapters: async () => [
+    { start: 5 * 1000, end: 15 * 1000, text: 'OP' },
+    { start: 1.0 * 60 * 1000, end: 1.2 * 60 * 1000, text: 'Chapter 1' },
+    { start: 1.4 * 60 * 1000, end: 88 * 1000, text: 'Chapter 2 ' }
+  ],
+  version: async () => 'v6.5.0',
+  updateSettings: async () => undefined,
+  setDOH: async () => undefined,
+  cachedTorrents: async () => [],
+  spawnPlayer: async () => undefined,
+  setHideToTray: async () => undefined,
+  setExperimentalGPU: async () => undefined,
+  transparency: async () => undefined,
+  setZoom: async () => undefined,
+  navigate: async () => undefined,
+  downloadProgress: async () => undefined,
+  updateProgress: async () => undefined,
+  createNZB: async () => undefined,
+  createHTTPWebSeed: async () => undefined,
+  getDisplays: ChromeCast.getDisplays,
+  castPlay: ChromeCast.castPlay,
+  castClose: ChromeCast.castClose,
+  enableCORS: async () => undefined,
+  torrentInfo: async (): Promise<TorrentInfo> => ({
+    name: '',
+    progress: 0,
+    size: { total: 0, downloaded: 0, uploaded: 0 },
+    speed: { down: 0, up: 0 },
+    time: { remaining: 0, elapsed: 0 },
+    peers: { seeders: 0, leechers: 0, wires: 0 },
+    pieces: { total: 0, size: 0 },
+    hash: ''
+  }),
+  fileInfo: async () => [],
+  peerInfo: async () => [],
+  trackers: async () => ({}),
+  protocolStatus: async () => ({
+    dht: false,
+    lsd: false,
+    pex: false,
+    nat: false,
+    forwarding: false,
+    persisting: false,
+    streaming: false
+  }),
+  defaultTransparency: () => false,
+  errors: async () => undefined,
+  debug: async () => undefined,
+  profile: async () => undefined,
+  updateToNewEndpoint: async () => undefined,
+  accentColor: async () => 'AccentColor',
+  pluginDelete: async () => undefined,
+  pluginImport: async () => { throw new Error('Plugins are not supported in this version of Hayase!') },
+  pluginList: async () => [],
+  pluginPopup: async () => undefined
+  // @ts-expect-error idk
+}, globalThis.native as Partial<Native>)

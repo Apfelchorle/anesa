@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "typeRoots": [
+      // these overrides are required, because we want a custom typed eventemitter, importing node types in any fashion will fully override the typed event emitter, making life a pain
+      // disabling type acquisition does NOT prevent type acquisition from working, WE LOVE TYPESCRIPT, INDUSTRY LEADING TECHNOLOGY
+      "./src/types"
+    ]
+  },
+  "typeAcquisition": {
+    "enable": false
+  },
+  "exclude": [
+    "node_modules",
+    ".svelte-kit",
+    "build",
+    "public"
+  ],
+  "files": [],
+  "references": [
+    {
+      "path": "./tsconfig.node.json"
+    },
+    {
+      "path": "./tsconfig.web.json"
+    }
+  ]
+}

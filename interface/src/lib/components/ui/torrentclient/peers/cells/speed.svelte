@@ -1,0 +1,21 @@
+<script lang='ts'>
+  import Download from '@lucide/svelte/icons/download'
+  import Upload from '@lucide/svelte/icons/upload'
+
+  import { fastPrettyBits } from '#lib/utils'
+
+  export let value: number
+  export let type: 'upload' | 'download'
+  export let compact = false
+</script>
+
+<div class={compact ? 'flex items-center' : 'flex gap-x-2 items-center'}>
+  {#if !compact}
+    {#if type === 'download'}
+      <Download class='size-3 text-green-500 mr-0.5' />
+    {:else}
+      <Upload class='size-3 text-blue-500 mr-0.5' />
+    {/if}
+  {/if}
+  {(compact ? fastPrettyBits(value * 8).trim() : fastPrettyBits(value * 8)) + '/s'}
+</div>

@@ -32,16 +32,10 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - name: Checkout app repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           path: hayase-tauri
-
-      - name: Checkout hayase-interface
-        uses: actions/checkout@v4
-        with:
-          repository: hayase-app/interface
-          path: hayase-interface
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -78,12 +72,12 @@ jobs:
             libjavascriptcoregtk-4.1-dev \
             libayatana-appindicator3-dev
 
-      - name: Install hayase-interface dependencies
-        working-directory: hayase-interface
+      - name: Install interface dependencies
+        working-directory: hayase-tauri/interface
         run: pnpm install --frozen-lockfile
 
-      - name: Build hayase-interface
-        working-directory: hayase-interface
+      - name: Build interface
+        working-directory: hayase-tauri/interface
         run: pnpm build
 
       - name: Install app dependencies
