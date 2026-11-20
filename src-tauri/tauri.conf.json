@@ -1,0 +1,41 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Hayase",
+  "version": "0.1.0",
+  "identifier": "com.github.thaunknown.miru",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://localhost:7344",
+    "beforeBuildCommand": "",
+    "frontendDist": "../../hayase-interface/build"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: http://localhost:* http://127.0.0.1:* https:; connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:*; font-src 'self' data:; worker-src 'self' blob:; frame-src https://www.youtube-nocookie.com; object-src 'none'; base-uri 'self'; form-action 'self'",
+      "dangerousDisableAssetCspModification": false,
+      "freezePrototype": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Video",
+    "shortDescription": "Torrent streaming made simple",
+    "longDescription": "Hayase - Torrent streaming made simple (Tauri/Rust scaffold)."
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["hayase"]
+      }
+    },
+    "updater": {
+      "active": false,
+      "endpoints": [],
+      "dialog": false,
+      "pubkey": ""
+    }
+  }
+}
