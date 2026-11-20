@@ -608,6 +608,17 @@ fn emit_embedded_subtitles<R: Runtime>(
     let mut mkv = matroska_demuxer::MatroskaFile::open(file)
         .map_err(|e| format!("Failed to parse Matroska file: {e:?}"))?;
 
+    let track_list: Vec<_> = mkv.tracks().iter().collect();
+    log::debug!(
+        "torrent_subtitles: parsed {} ({} tracks: {:?})",
+        path.display(),
+        track_list.len(),
+        track_list
+            .iter()
+            .map(|t| (t.track_number().get(), format!("{:?}", t.track_type())))
+            .collect::<Vec<_>>()
+    );
+
     // Note: we deliberately do not filter frames by track number here.
     // `matroska_demuxer`'s `frame.track` is not guaranteed to equal the MKV
     // `TrackNumber` used by the `matroska` crate for the UI track list, and
@@ -616,15 +627,20 @@ fn emit_embedded_subtitles<R: Runtime>(
     // video/audio frames are binary).
 
     let mut frame = matroska_demuxer::Frame::default();
+    let mut emitted: u64 = 0;
+    let mut skipped_binary: u64 = 0;
+    let mut skipped_empty: u64 = 0;
     loop {
         match mkv.next_frame(&mut frame) {
             Ok(true) => {
                 // Subtitle tracks carry text; video/audio frames are binary and
                 // must not be emitted as cues. Skip anything that isn't valid UTF-8.
                 let Ok(text) = String::from_utf8(frame.data.clone()) else {
+                    skipped_binary += 1;
                     continue;
                 };
                 if text.trim().is_empty() {
+                    skipped_empty += 1;
                     continue;
                 }
 
@@ -648,8 +664,10 @@ fn emit_embedded_subtitles<R: Runtime>(
 
                 // Best-effort emit; if the webview is gone, stop.
                 if app.emit(EVENT_TORRENT_SUBTITLE, payload).is_err() {
+                    log::debug!("torrent_subtitles: emit failed, stopping");
                     return Ok(());
                 }
+                emitted += 1;
             }
             Ok(false) => break,
             Err(e) => {
@@ -660,6 +678,9 @@ fn emit_embedded_subtitles<R: Runtime>(
         }
     }
 
+    log::debug!(
+        "torrent_subtitles: finished {hash}/{id} — emitted={emitted} skipped_binary={skipped_binary} skipped_empty={skipped_empty}"
+    );
     Ok(())
 }
 

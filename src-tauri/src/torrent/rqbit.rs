@@ -1103,6 +1103,14 @@ impl TorrentBackend for RqbitBackend {
     async fn tracks(&self, hash: &str, id: usize) -> Result<Vec<SubtitleTrack>, String> {
         validate_hash(hash)?;
         let meta = self.ensure_media_meta(hash, id).await?;
+        log::debug!(
+            "torrent_tracks: {hash}/{id} -> {} tracks: {:?}",
+            meta.tracks.len(),
+            meta.tracks
+                .iter()
+                .map(|t| (t.number, t.track_type.clone(), t.language.clone()))
+                .collect::<Vec<_>>()
+        );
         Ok(meta.tracks)
     }
 
