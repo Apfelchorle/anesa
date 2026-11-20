@@ -118,7 +118,7 @@ export default class Subtitles {
     const subFiles = otherFiles.filter(({ name }) => subRx.test(name))
 
     const fetchAndLoad = async (file: { url: string, name?: string, language?: string }) => {
-      console.debug('[subs] fetchAndLoad:', file.url, file.name)
+      console.log('[subs] fetchAndLoad:', file.url, file.name)
       const res = await fetch(file.url)
       const blob = await res.blob()
       await this.addSingleSubtitleFile(new File([blob], file.name ?? new URL(file.url).pathname.split('/').pop() ?? file.url), file.language)
@@ -142,7 +142,7 @@ export default class Subtitles {
     }
 
     const tracks = native.tracks(this.selected.hash, this.selected.id).then(async tracklist => {
-      console.debug('[subs] tracks result:', tracklist)
+      console.log('[subs] tracks result:', tracklist)
       for (const track of tracklist) {
         const newtrack = this.track(track.number)
         if (track.header?.startsWith('[Script Info]')) track.type = 'ass'
@@ -204,7 +204,7 @@ export default class Subtitles {
     }).catch(console.error)
 
     native.subtitles(this.selected.hash, this.selected.id, async (subtitle, trackNumber) => {
-      console.debug('[subs] cue arrived:', trackNumber, subtitle)
+      console.log('[subs] cue arrived:', trackNumber, subtitle)
       await tracks.catch(() => {})
       const { events, meta } = this.track(trackNumber)
       if (!meta.type) meta.type = 'ass'
@@ -266,7 +266,7 @@ export default class Subtitles {
   }
 
   async addSingleSubtitleFile (file: File, language?: string) {
-    console.debug('[subs] addSingleSubtitleFile:', file.name, file.type, file.size)
+    console.log('[subs] addSingleSubtitleFile:', file.name, file.type, file.size)
     const dot = file.name.lastIndexOf('.')
     const extension = file.name.substring(dot + 1).toLowerCase()
     if (!subtitleExtensions.includes(extension)) return
@@ -391,7 +391,7 @@ export default class Subtitles {
   }
 
   async selectCaptions (trackNumber: number | string) {
-    console.debug('[subs] selectCaptions:', trackNumber, 'events:', this._tracks.value[trackNumber]?.events.size)
+    console.log('[subs] selectCaptions:', trackNumber, 'events:', this._tracks.value[trackNumber]?.events.size)
     this.current.value = trackNumber
 
     if (!this.jassub) return

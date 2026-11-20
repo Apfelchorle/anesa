@@ -6,7 +6,7 @@ import { writable } from 'simple-store-svelte'
 import { get } from 'svelte/store'
 import { pipe, tap } from 'wonka'
 
-import { anilistClientID } from '../settings'
+import { anilistClientID, anilistClientSecret } from '../settings'
 
 import { makeDefaultStorage } from './exchanges/defaultstorage.ts'
 import { cacheOnErrorExchange } from './exchanges/error.ts'
@@ -107,9 +107,30 @@ export default new class URQLClient extends Client {
   async token () {
     debug('Requesting Anilist token')
     const redirect = 'hayase://authorize/'
-    const res = await native.authAL(`https://anilist.co/api/v2/oauth/authorize?client_id=${get(anilistClientID)}&response_type=token&redirect_uri=${encodeURIComponent(redirect)}`)
-    const token = res.access_token
-    const expires = '' + (Date.now() + (parseInt(res.expires_in) * 1000))
+    const state = crypto.randomUUID().replaceAll('-', '')
+    const verifier = (crypto.randomUUID() + crypto.randomUUID()).replaceAll('-', '')
+    const challenge = verifier
+    const { code, state: returnedState } = await native.authAL(
+      `https://anilist.co/api/v2/oauth/authorize?response_type=code&client_id=${get(anilistClientID)}&state=${state}&code_challenge=${challenge}&code_challenge_method=plain&redirect_uri=${encodeURIComponent(redirect)}`
+    )
+    if (returnedState && returnedState !== state) throw new Error('AniList OAuth state mismatch')
+
+    const tokenRes = await fetch('https://anilist.co/api/v2/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        client_id: get(anilistClientID),
+        client_secret: get(anilistClientSecret) || undefined,
+        redirect_uri: redirect,
+        code,
+        code_verifier: verifier
+      })
+    })
+    const data = await tokenRes.json()
+    if (data.error) throw new Error(data.error_description || data.error)
+    const token = data.access_token
+    const expires = '' + (Date.now() + (parseInt(data.expires_in) * 1000))
     this.viewer.value = { viewer: this.viewer.value?.viewer ?? null, token, expires }
     return { token, expires }
   }

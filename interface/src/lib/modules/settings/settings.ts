@@ -24,6 +24,10 @@ export const anilistClientID = persisted('anilist-client-id', alID, {
   beforeWrite: v => v || alID,
   beforeRead: v => v || alID
 })
+export const anilistClientSecret = persisted('anilist-client-secret', '', {
+  beforeWrite: v => v || '',
+  beforeRead: v => v || ''
+})
 export const malClientID = persisted('mal-client-id', malID, {
   beforeWrite: v => v || malID,
   beforeRead: v => v || malID

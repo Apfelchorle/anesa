@@ -25,7 +25,7 @@
   import simklclient from '#lib/modules/auth/simkl'
   import native from '#lib/modules/native'
   import { click } from '#lib/modules/navigate'
-  import { anilistClientID, malClientID, simklClientID, simklClientSecret } from '#lib/modules/settings'
+  import { anilistClientID, anilistClientSecret, malClientID, simklClientID, simklClientSecret } from '#lib/modules/settings'
 
   const alviewer = client.client.viewer
 
@@ -128,6 +128,9 @@
           </SettingCard>
           <SettingCard title='Client ID' description='The Client ID used for AniList authentication and API access. Change this if you want to use your own, or if the default one stops working.' let:id>
             <Input type='number' class='w-32' {id} placeholder='AniList Client ID' bind:value={$anilistClientID} />
+          </SettingCard>
+          <SettingCard title='Client Secret' description='Optional. Only needed if your AniList app requires a secret (leave empty when using PKCE).' let:id>
+            <Input type='password' class='w-48' {id} placeholder='AniList Client Secret' bind:value={$anilistClientSecret} />
           </SettingCard>
         </Dialog.Content>
       </Dialog.Root>
