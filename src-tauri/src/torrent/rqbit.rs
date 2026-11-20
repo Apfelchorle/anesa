@@ -933,20 +933,39 @@ impl TorrentBackend for RqbitBackend {
             Some(p) if !p.is_empty() => PathBuf::from(p),
             _ => self.download_dir.read().await.clone(),
         };
-        let target = target
-            .canonicalize()
-            .unwrap_or_else(|_| target.to_path_buf());
+        let canonical = target.canonicalize().unwrap_or_else(|_| target.clone());
         let disks = sysinfo::Disks::new_with_refreshed_list();
+
+        fn normalize_for_match(p: &std::path::Path) -> std::path::PathBuf {
+            let s = p.to_string_lossy();
+            // Windows extended-length paths (\\?\C:\...) won't prefix-match mount points like C:\.
+            let stripped = s.strip_prefix(r"\\?\").unwrap_or(&s);
+            std::path::PathBuf::from(stripped)
+        }
+
+        let candidates = [normalize_for_match(&canonical), normalize_for_match(&target)];
         let mut best: Option<(usize, u64)> = None;
         for disk in disks.iter() {
-            let mount = disk.mount_point();
-            if target.starts_with(mount) {
-                let len = mount.as_os_str().len();
-                if best.map(|(l, _)| len >= l).unwrap_or(true) {
-                    best = Some((len, disk.available_space()));
+            let mount = normalize_for_match(disk.mount_point());
+            for candidate in &candidates {
+                #[cfg(windows)]
+                let matches = {
+                    let c = candidate.to_string_lossy().to_lowercase();
+                    let m = mount.to_string_lossy().to_lowercase();
+                    c.starts_with(&m)
+                };
+                #[cfg(not(windows))]
+                let matches = candidate.starts_with(&mount);
+
+                if matches {
+                    let len = mount.as_os_str().len();
+                    if best.map(|(l, _)| len >= l).unwrap_or(true) {
+                        best = Some((len, disk.available_space()));
+                    }
                 }
             }
         }
+
         best.map(|(_, space)| space)
             .ok_or_else(|| "Could not determine available disk space".to_string())
     }

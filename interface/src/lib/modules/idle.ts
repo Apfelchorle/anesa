@@ -19,14 +19,34 @@ export const activityState = readable<'active' | 'inactive'>(document.hasFocus()
 let idleDetector: any = { userState: 'active', screenState: 'unlocked' }
 try {
   // @ts-expect-error non-standard API
-  idleDetector = typeof IdleDetector !== 'undefined' && new IdleDetector()
-  if (idleDetector) {
-    idleDetector.start({ threshold: 60_000 }).catch((error: Error) => {
-      console.warn(error)
-    })
+  const IdleDetectorCtor = typeof IdleDetector !== 'undefined' ? IdleDetector : undefined
+  if (IdleDetectorCtor) {
+    const detector = new IdleDetectorCtor()
+    idleDetector = detector
+    // Permission may be denied (common in WebView2/Tauri on Windows). Treat as non-fatal.
+    const start = async () => {
+      try {
+        // @ts-expect-error non-standard API
+        if (typeof IdleDetectorCtor.requestPermission === 'function') {
+          // @ts-expect-error non-standard API
+          const perm = await IdleDetectorCtor.requestPermission()
+          if (perm === 'denied') return
+        }
+      } catch {
+        // requestPermission may require user activation or be unsupported; try start anyway.
+      }
+      try {
+        await detector.start({ threshold: 60_000 })
+      } catch (error) {
+        console.warn('Idle detection unavailable:', error)
+        idleDetector = { userState: 'active', screenState: 'unlocked' }
+      }
+    }
+    void start()
   }
 } catch (error) {
-  console.warn(error)
+  console.warn('Idle detection unavailable:', error)
+  idleDetector = { userState: 'active', screenState: 'unlocked' }
 }
 
 export const idleState = readable<'active' | 'idle'>(idleDetector.userState, set => {
