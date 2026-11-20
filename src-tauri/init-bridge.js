@@ -20,6 +20,7 @@
   // and the extension worker shim in interface/src/lib/modules/extensions/worker.ts.
   var PROXY_HOSTS = {
     'graphql.anilist.co': true,
+    'anilist.co': true,
     'hayase.ani.zip': true,
     'api.animethemes.moe': true,
     'api.aniskip.com': true,

@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 /// extension worker fetch shim in `interface/src/lib/modules/extensions/worker.ts`.
 const ALLOWED_PROXY_HOSTS: &[&str] = &[
     "graphql.anilist.co",
+    "anilist.co",
     "hayase.ani.zip",
     "api.animethemes.moe",
     "api.aniskip.com",
@@ -134,7 +135,7 @@ fn header_allowed_for_host(name: &str, host: &str) -> bool {
     match name {
         "authorization" => matches!(
             host,
-            "graphql.anilist.co" | "api.myanimelist.net" | "api.simkl.com" | "kitsu.app"
+            "graphql.anilist.co" | "anilist.co" | "api.myanimelist.net" | "api.simkl.com" | "kitsu.app"
         ),
         "simkl-api-key" | "client-id" => host == "api.simkl.com",
         _ => true,
