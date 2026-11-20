@@ -401,6 +401,22 @@ impl RqbitBackend {
             .ok_or_else(|| format!("File id out of range: {file_id}"))
     }
 
+    /// Best-effort resolved on-disk path for a torrent file.
+    pub async fn resolve_file_disk_path(&self, hash: &str, file_id: usize) -> Result<Option<PathBuf>, String> {
+        validate_hash(hash)?;
+        let handle = self.handle(hash)?;
+        let rel = handle
+            .with_metadata(|m| {
+                m.file_infos
+                    .get(file_id)
+                    .map(|fi| fi.relative_filename.clone())
+            })
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("File id out of range: {file_id}"))?;
+        let download_dir = self.download_dir.read().await.clone();
+        Ok(Some(download_dir.join(rel)))
+    }
+
     /// Open a raw seekable streaming reader for a file.
     pub async fn open_seekable_file_stream(
         &self,
@@ -1030,6 +1046,10 @@ impl TorrentBackend for RqbitBackend {
             .map_err(|e| format!("Failed to create download directory: {e}"))?;
         *self.download_dir.write().await = path;
         Ok(())
+    }
+
+    async fn file_disk_path(&self, hash: &str, id: usize) -> Result<Option<PathBuf>, String> {
+        self.resolve_file_disk_path(hash, id).await
     }
 
     async fn attachments(&self, hash: &str, id: usize) -> Result<Vec<Attachment>, String> {

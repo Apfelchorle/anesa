@@ -559,23 +559,115 @@ struct SubtitleEvent {
 
 /// Stream embedded subtitles as `torrent://subtitle` events.
 ///
-/// Full MKV/EBML subtitle parsing is not yet implemented in the Rust backend.
-/// This command currently validates input and completes without emitting cues,
-/// keeping the native contract compatible for callers that await it.
+/// Best-effort MKV subtitle cue extraction: parses subtitle blocks from the
+/// on-disk media file (when available) and emits cues to the frontend, which
+/// feeds them into Jassub. This enables embedded tracks (e.g. ASS/SRT-in-MKV)
+/// that VLC can display but the web player otherwise can't access.
 #[tauri::command]
 pub async fn torrent_subtitles<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     torrent: State<'_, TorrentState>,
     hash: String,
     id: usize,
 ) -> Result<(), String> {
     validate_infohash(&hash)?;
-    // Ensure torrent/file exists (best-effort); extraction/parsing parity pending.
-    let _ = torrent.backend().file_info(&hash).await;
-    let _ = id;
-    // If/when parsing is implemented, emit events like:
-    // let _ = _app.emit(EVENT_TORRENT_SUBTITLE, SubtitleEventPayload { ... });
-    let _ = EVENT_TORRENT_SUBTITLE;
+
+    let backend = torrent.backend();
+    let path = match backend.file_disk_path(&hash, id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => return Ok(()),
+        Err(e) => {
+            log::debug!("torrent_subtitles: could not resolve file path for {hash}/{id}: {e}");
+            return Ok(());
+        }
+    };
+
+    // Spawn extraction so the command returns promptly (frontend awaits it but also
+    // listens for streaming `torrent://subtitle` events).
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(e) = emit_embedded_subtitles(&app, &hash, id, &path) {
+            log::debug!("torrent_subtitles: extraction failed for {hash}/{id}: {e}");
+        }
+    });
+
+    Ok(())
+}
+
+fn emit_embedded_subtitles<R: Runtime>(
+    app: &AppHandle<R>,
+    hash: &str,
+    id: usize,
+    path: &Path,
+) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("Media file not found on disk: {}", path.display()));
+    }
+
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("Failed to open media file {}: {e}", path.display()))?;
+    let mut mkv = matroska_demuxer::MatroskaFile::open(file)
+        .map_err(|e| format!("Failed to parse Matroska file: {e:?}"))?;
+
+    // Track numbers for subtitle tracks in this file.
+    let subtitle_tracks: std::collections::HashSet<u64> = mkv
+        .tracks()
+        .iter()
+        .filter(|t| t.track_type() == matroska_demuxer::TrackType::Subtitle)
+        .map(|t| t.track_number().get())
+        .collect();
+
+    if subtitle_tracks.is_empty() {
+        return Ok(());
+    }
+
+    let mut frame = matroska_demuxer::Frame::default();
+    loop {
+        match mkv.next_frame(&mut frame) {
+            Ok(true) => {
+                if !subtitle_tracks.contains(&frame.track) {
+                    continue;
+                }
+
+                let text = match String::from_utf8(frame.data.clone()) {
+                    Ok(s) => s,
+                    Err(_) => String::from_utf8_lossy(&frame.data).into_owned(),
+                };
+                if text.trim().is_empty() {
+                    continue;
+                }
+
+                // matroska-demuxer reports timestamps/durations in nanoseconds.
+                let time = frame.timestamp as f64 / 1_000_000_000.0;
+                let duration = frame
+                    .duration
+                    .map(|d| d as f64 / 1_000_000_000.0)
+                    .unwrap_or(0.0);
+
+                let payload = SubtitleEventPayload {
+                    hash: hash.to_string(),
+                    id,
+                    subtitle: SubtitleEvent {
+                        text,
+                        time,
+                        duration,
+                    },
+                    track_number: frame.track as i64,
+                };
+
+                // Best-effort emit; if the webview is gone, stop.
+                if app.emit(EVENT_TORRENT_SUBTITLE, payload).is_err() {
+                    return Ok(());
+                }
+            }
+            Ok(false) => break,
+            Err(e) => {
+                // Partial/incomplete files are common while streaming torrents; emit what we got.
+                log::debug!("torrent_subtitles: stopped reading frames for {hash}/{id}: {e:?}");
+                break;
+            }
+        }
+    }
+
     Ok(())
 }
 

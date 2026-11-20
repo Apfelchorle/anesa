@@ -361,6 +361,9 @@ pub trait TorrentBackend: Send + Sync {
     /// Change the download directory used for future torrents.
     async fn set_download_dir(&self, path: &str) -> Result<(), String>;
 
+    /// Best-effort on-disk path for a torrent file, if known/available.
+    async fn file_disk_path(&self, hash: &str, id: usize) -> Result<Option<std::path::PathBuf>, String>;
+
     async fn attachments(&self, hash: &str, id: usize) -> Result<Vec<Attachment>, String>;
     async fn tracks(&self, hash: &str, id: usize) -> Result<Vec<SubtitleTrack>, String>;
     async fn chapters(&self, hash: &str, id: usize) -> Result<Vec<Chapter>, String>;
@@ -480,6 +483,10 @@ impl TorrentBackend for StubTorrentBackend {
 
     async fn set_download_dir(&self, _path: &str) -> Result<(), String> {
         Ok(())
+    }
+
+    async fn file_disk_path(&self, _hash: &str, _id: usize) -> Result<Option<std::path::PathBuf>, String> {
+        Ok(None)
     }
 
     async fn attachments(&self, _hash: &str, _id: usize) -> Result<Vec<Attachment>, String> {
