@@ -204,29 +204,36 @@ export default class Subtitles {
     }).catch(console.error)
 
     native.subtitles(this.selected.hash, this.selected.id, async (subtitle, trackNumber) => {
-      console.log('[subs] cue arrived:', trackNumber, subtitle)
+      console.log('[subs] cue arrived:', trackNumber, { text: subtitle.text?.slice(0, 60), time: subtitle.time, duration: subtitle.duration })
       await tracks.catch(() => {})
       const { events, meta } = this.track(trackNumber)
       if (!meta.type) meta.type = 'ass'
       const key = subtitle.text + subtitle.duration.toString() + subtitle.time.toString()
       if (events.has(key)) return
-      const event = this.constructSub(subtitle, meta.type !== 'ass', events.size)
-      events.set(key, event)
+      // Format the cue as a full timed Dialogue line, mirroring constructSub for
+      // manually-added files (which render via setTrack). processChunk(text,time,duration)
+      // silently no-ops in JASSUB, so we feed complete timed lines through setTrack.
+      const isAss = meta.type === 'ass'
+      let text = subtitle.text ?? ''
+      if (!isAss) {
+        const converted = this.constructSub(subtitle, true, events.size)
+        text = converted.text
+      } else {
+        text = text.replace(/\r?\n/g, '')
+      }
+      const start = toTS(subtitle.time, 2)
+      const end = toTS(subtitle.time + (subtitle.duration || 0), 2)
+      const line = `Dialogue: 0,${start},${end},Default,,0,0,0,,${text}`
+      events.set(key, { text: line, time: subtitle.time, duration: subtitle.duration } as any)
 
       const tn = Number(trackNumber)
-      // Render even when no track was auto-selected (e.g. track numbers from the
-      // demuxer don't match the UI list): select this track on the first cue so
-      // the subtitles actually show up instead of being silently dropped.
       const wasSelected = Number(this.current.value) === tn
       if (this.current.value === -1) {
-        this.current.value = tn   // triggers selectCaptions async, which drains stored cues
+        this.current.value = tn
       }
-      // Only processChunk directly when the track was already selected; otherwise
-      // selectCaptions (triggered above) handles rendering and we avoid duplicates.
-      if (wasSelected) {
-        await this.jassub?.ready
-        if (this.jassub?._destroyed) return
-        this.jassub?.renderer.processChunk(event.text, event.time, event.duration)
+      // Re-render through setTrack (the proven path) when this track is selected.
+      if (wasSelected || this.current.value === -1) {
+        await this._renderTrack(tn)
       }
     }).catch(console.error)
 
@@ -317,6 +324,17 @@ export default class Subtitles {
     } catch (e) {
       console.error('[subs] initSubtitleRenderer FAILED:', e)
     }
+  }
+
+  async _renderTrack (trackNumber: number | string) {
+    const track = this._tracks.value[trackNumber]
+    if (!track || !this.jassub) return
+    await this.jassub.ready
+    const lines = [...track.events.values()].map(e => (e as any).text).join('\n')
+    const header = track.meta.header?.slice(0, -1) || defaultHeader
+    console.log('[subs] _renderTrack:', trackNumber, 'cues=', track.events.size)
+    await this.jassub.renderer.setTrack(header + (lines ? '\n' + lines : ''))
+    await this.jassub.resize()
   }
 
   lastSubtitleStyle: typeof defaults.subtitleStyle | undefined = undefined
@@ -419,17 +437,16 @@ export default class Subtitles {
       lastSelectedTrack = track.meta
 
       await this.jassub.renderer.setTrack(track.meta.header?.slice(0, -1) || defaultHeader)
-      console.log('[subs] selectCaptions: setTrack done, processing cues')
+      console.log('[subs] selectCaptions: setTrack done, rendering cues')
 
-      // If the clicked track has no cues (e.g. track numbers from the demuxer
-      // didn't match the UI list), fall back to rendering cues stored under any
-      // other track so subtitles still appear instead of a blank screen.
-      const eventsToRender = track.events.size ? track.events : Object.values(this._tracks.value).find(t => t.events.size)?.events
-      if (eventsToRender) {
-        for (const { text, duration, time } of eventsToRender.values()) {
-          try { await this.jassub.renderer.processChunk(text, time, duration) }
-          catch (e) { console.error('[subs] processChunk failed:', e, text?.slice?.(0, 80)) }
-        }
+      // Render through setTrack with full timed Dialogue lines (the proven path
+      // used by manually-added files). Fall back to any track that has cues when
+      // the clicked track is empty (track-number mismatch between parsers).
+      const eventsTrack = track.events.size ? track : Object.values(this._tracks.value).find(t => t.events.size)
+      if (eventsTrack) {
+        const lines = [...eventsTrack.events.values()].map(e => (e as any).text).join('\n')
+        const header = track.meta.header?.slice(0, -1) || defaultHeader
+        await this.jassub.renderer.setTrack(header + (lines ? '\n' + lines : ''))
       }
       const lang = track.meta.language
     if (LANGUAGE_OVERRIDES[lang]) {
