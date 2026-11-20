@@ -1,5 +1,5 @@
 import { authExchange } from '@urql/exchange-auth'
-import { Client, fetchExchange } from '@urql/svelte'
+import { Client, fetchExchange, mapExchange } from '@urql/svelte'
 // import Bottleneck from 'bottleneck'
 import Debug from 'debug'
 import { writable } from 'simple-store-svelte'
@@ -24,6 +24,41 @@ import native from '#lib/modules/native'
 import { safeLocalStorage } from '#lib/utils'
 
 const debug = Debug('ui:urql')
+
+// gql.tada uses `@_unmask` for fragment-masking types. It is not part of the
+// AniList schema and must never be sent over the wire. The typed operations in
+// queries.ts keep the directive for the type system; this strips it at runtime.
+const stripDirectives = (node: any, names: Set<string>): any => {
+  if (!node || typeof node !== 'object') return node
+  if (Array.isArray(node)) {
+    const out = []
+    for (const item of node) {
+      if (item && typeof item === 'object' && item.kind === 'Directive' && names.has(item.name?.value)) continue
+      out.push(stripDirectives(item, names))
+    }
+    return out
+  }
+  const out: any = {}
+  for (const key of Object.keys(node)) {
+    const value = node[key]
+    if (key === 'directives' && Array.isArray(value)) {
+      out[key] = value.filter((d: any) => !names.has(d?.name?.value))
+      continue
+    }
+    out[key] = stripDirectives(value, names)
+  }
+  return out
+}
+
+const UNMASK = new Set(['_unmask'])
+const stripUnmaskDirectives = (query: any) => stripDirectives(query, UNMASK)
+
+const anilistExchange = mapExchange({
+  onOperation (operation) {
+    if (operation.kind === 'teardown') return operation
+    return { ...operation, query: stripUnmaskDirectives(operation.query) }
+  }
+})
 
 interface ViewerData { viewer: ResultOf<typeof Viewer>['Viewer'], token: string, expires: string }
 
@@ -109,6 +144,7 @@ export default new class URQLClient extends Client {
       preferGetMethod: false,
       // fetch: (req: RequestInfo | URL, opts?: RequestInit) => this.handleRequest(req, opts),
       exchanges: [
+        anilistExchange,
         refocusExchange({ minimumTime: 60_000 }),
         cacheOnErrorExchange(),
         retryExchange({
