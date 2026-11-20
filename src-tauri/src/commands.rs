@@ -608,29 +608,21 @@ fn emit_embedded_subtitles<R: Runtime>(
     let mut mkv = matroska_demuxer::MatroskaFile::open(file)
         .map_err(|e| format!("Failed to parse Matroska file: {e:?}"))?;
 
-    // Track numbers for subtitle tracks in this file.
-    let subtitle_tracks: std::collections::HashSet<u64> = mkv
-        .tracks()
-        .iter()
-        .filter(|t| t.track_type() == matroska_demuxer::TrackType::Subtitle)
-        .map(|t| t.track_number().get())
-        .collect();
-
-    if subtitle_tracks.is_empty() {
-        return Ok(());
-    }
+    // Note: we deliberately do not filter frames by track number here.
+    // `matroska_demuxer`'s `frame.track` is not guaranteed to equal the MKV
+    // `TrackNumber` used by the `matroska` crate for the UI track list, and
+    // filtering on it previously dropped every cue on affected files. We instead
+    // keep only frames whose payload is valid UTF-8 (subtitle tracks carry text;
+    // video/audio frames are binary).
 
     let mut frame = matroska_demuxer::Frame::default();
     loop {
         match mkv.next_frame(&mut frame) {
             Ok(true) => {
-                if !subtitle_tracks.contains(&frame.track) {
+                // Subtitle tracks carry text; video/audio frames are binary and
+                // must not be emitted as cues. Skip anything that isn't valid UTF-8.
+                let Ok(text) = String::from_utf8(frame.data.clone()) else {
                     continue;
-                }
-
-                let text = match String::from_utf8(frame.data.clone()) {
-                    Ok(s) => s,
-                    Err(_) => String::from_utf8_lossy(&frame.data).into_owned(),
                 };
                 if text.trim().is_empty() {
                     continue;

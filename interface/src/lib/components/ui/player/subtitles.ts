@@ -202,13 +202,25 @@ export default class Subtitles {
     }).catch(console.error)
 
     native.subtitles(this.selected.hash, this.selected.id, async (subtitle, trackNumber) => {
-      await tracks
+      await tracks.catch(() => {})
       const { events, meta } = this.track(trackNumber)
+      if (!meta.type) meta.type = 'ass'
       const key = subtitle.text + subtitle.duration.toString() + subtitle.time.toString()
       if (events.has(key)) return
       const event = this.constructSub(subtitle, meta.type !== 'ass', events.size)
       events.set(key, event)
-      if (Number(this.current.value) === trackNumber) {
+
+      const tn = Number(trackNumber)
+      // Render even when no track was auto-selected (e.g. track numbers from the
+      // demuxer don't match the UI list): select this track on the first cue so
+      // the subtitles actually show up instead of being silently dropped.
+      const wasSelected = Number(this.current.value) === tn
+      if (this.current.value === -1) {
+        this.current.value = tn   // triggers selectCaptions async, which drains stored cues
+      }
+      // Only processChunk directly when the track was already selected; otherwise
+      // selectCaptions (triggered above) handles rendering and we avoid duplicates.
+      if (wasSelected) {
         await this.jassub?.ready
         if (this.jassub?._destroyed) return
         this.jassub?.renderer.processChunk(event.text, event.time, event.duration)
@@ -391,7 +403,14 @@ export default class Subtitles {
     lastSelectedTrack = track.meta
 
     await this.jassub.renderer.setTrack(track.meta.header?.slice(0, -1) || defaultHeader)
-    for (const { text, duration, time } of track.events.values()) await this.jassub.renderer.processChunk(text, time, duration)
+
+    // If the clicked track has no cues (e.g. track numbers from the demuxer
+    // didn't match the UI list), fall back to rendering cues stored under any
+    // other track so subtitles still appear instead of a blank screen.
+    const eventsToRender = track.events.size ? track.events : Object.values(this._tracks.value).find(t => t.events.size)?.events
+    if (eventsToRender) {
+      for (const { text, duration, time } of eventsToRender.values()) await this.jassub.renderer.processChunk(text, time, duration)
+    }
     const lang = track.meta.language
     if (LANGUAGE_OVERRIDES[lang]) {
       const name = LANGUAGE_OVERRIDES[lang]
