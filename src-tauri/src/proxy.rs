@@ -17,7 +17,8 @@ use reqwest::{Client, Method, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 
 /// Hosts used by the first-party interface that are known to be CORS-blocked.
-/// Keep this in sync with `PROXY_HOSTS` in `src-tauri/init-bridge.js`.
+/// Keep this in sync with `PROXY_HOSTS` in `src-tauri/init-bridge.js` and the
+/// extension worker fetch shim in `interface/src/lib/modules/extensions/worker.ts`.
 const ALLOWED_PROXY_HOSTS: &[&str] = &[
     "graphql.anilist.co",
     "hayase.ani.zip",
@@ -28,6 +29,13 @@ const ALLOWED_PROXY_HOSTS: &[&str] = &[
     "myanimelist.net",
     "api.simkl.com",
     "kitsu.app",
+    // First-party extension hosts (trusted extensions only).
+    "nekobt.to",
+    "feed.animetosho.net",
+    "amenzb.moe",
+    "aninzb.moe",
+    "api.tsukihime.org",
+    "storage.tsukihime.org",
 ];
 
 /// Request headers that are safe and useful to forward. Browser-controlled

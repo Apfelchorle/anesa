@@ -5,6 +5,90 @@ import SUPPORTS from '../settings/supports'
 
 import type { NZBQuery, WebSeedQuery, WebSeedResult, WebSeedFile, AnimeQuery, TorrentResult, TorrentSource, NZBSource, SubtitleSource, Accuracy, WebSeedSource } from './types'
 
+// First-party extension hosts allowed through the Tauri CORS proxy.
+// Keep in sync with ALLOWED_PROXY_HOSTS in src-tauri/src/proxy.rs.
+const PROXY_HOSTS: Record<string, true> = {
+  'nekobt.to': true,
+  'feed.animetosho.net': true,
+  'amenzb.moe': true,
+  'aninzb.moe': true,
+  'api.tsukihime.org': true,
+  'storage.tsukihime.org': true
+}
+
+const nativeFetch = typeof fetch === 'function' ? fetch.bind(globalThis) : undefined
+
+function shouldProxyExtension (input: RequestInfo | URL): boolean {
+  try {
+    const raw = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    const url = new URL(raw)
+    return url.protocol === 'https:' && PROXY_HOSTS[url.hostname] === true
+  } catch {
+    return false
+  }
+}
+
+function extBytesToBase64 (bytes: Uint8Array): string {
+  let binary = ''
+  const chunk = 0x8000
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+  }
+  return btoa(binary)
+}
+
+function extBase64ToBytes (base64: string): Uint8Array {
+  const binary = atob(base64 || '')
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes
+}
+
+async function proxiedWorkerFetch (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  if (!nativeFetch) throw new Error('fetch unavailable')
+  if (!shouldProxyExtension(input)) return nativeFetch(input, init)
+
+  const tauri = (globalThis as any).__TAURI_INTERNALS__
+  if (!tauri?.invoke) return nativeFetch(input, init)
+
+  const request = input instanceof Request ? input : new Request(input, init)
+  const mergedInit: RequestInit = request === input ? { ...(init || {}) } : { ...(init || {}), method: request.method, headers: request.headers }
+  const method = (mergedInit.method || request.method || 'GET').toUpperCase()
+
+  const headers = new Headers(mergedInit.headers || request.headers)
+  let body_base64: string | null = null
+  if (!['GET', 'HEAD'].includes(method)) {
+    if (mergedInit.body != null) {
+      body_base64 = extBytesToBase64(new Uint8Array(await new Response(mergedInit.body as BodyInit).arrayBuffer()))
+    } else if (request !== input) {
+      body_base64 = extBytesToBase64(new Uint8Array(await request.clone().arrayBuffer()))
+    }
+  }
+
+  const headerObj: Record<string, string> = {}
+  headers.forEach((value, key) => { headerObj[key] = value })
+
+  const result = await tauri.invoke('proxy_fetch', {
+    request: {
+      url: request.url,
+      method,
+      headers: headerObj,
+      body_base64
+    }
+  }) as { status: number, status_text: string, headers: Record<string, string>, body_base64: string }
+
+  const response = new Response(result.body_base64 ? (extBase64ToBytes(result.body_base64) as any) : null, {
+    status: result.status,
+    statusText: result.status_text,
+    headers: result.headers || {}
+  })
+  Object.defineProperty(response, 'url', { value: request.url })
+  return response
+}
+
+// In workers, prefer the Tauri proxy for allowlisted first-party extension hosts
+// to avoid CORS failures (e.g. nekobt.to announcements/test). Falls back to
+// native fetch if Tauri internals are unavailable.
 const _fetch = SUPPORTS.isIOS
   ? (input: RequestInfo | URL, init?: RequestInit) => {
       if (typeof input === 'string') {
@@ -14,9 +98,15 @@ const _fetch = SUPPORTS.isIOS
       } else if (input instanceof Request) {
         input = new Request(input.url.replace(/^https?:\/\//, 'cors://'), input)
       }
-      return fetch(input, init)
+      return proxiedWorkerFetch(input, init)
     }
-  : fetch
+  : proxiedWorkerFetch
+
+// Also patch the worker-global fetch so extension code that calls bare `fetch()`
+// (e.g. in test()) can reach allowlisted hosts without CORS issues.
+if (typeof globalThis.fetch === 'function') {
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => _fetch(input, init)) as typeof fetch
+}
 
 interface AccuracyRule {
   setTo: Accuracy

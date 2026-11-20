@@ -16,7 +16,8 @@
   // only these exact hosts through the Rust command, which enforces the same
   // allowlist. Everything else keeps using the native fetch implementation.
   //
-  // Keep this list in sync with ALLOWED_PROXY_HOSTS in src-tauri/src/proxy.rs.
+  // Keep this list in sync with ALLOWED_PROXY_HOSTS in src-tauri/src/proxy.rs
+  // and the extension worker shim in interface/src/lib/modules/extensions/worker.ts.
   var PROXY_HOSTS = {
     'graphql.anilist.co': true,
     'hayase.ani.zip': true,
@@ -26,7 +27,14 @@
     'api.myanimelist.net': true,
     'myanimelist.net': true,
     'api.simkl.com': true,
-    'kitsu.app': true
+    'kitsu.app': true,
+    // First-party extension hosts (trusted extensions only).
+    'nekobt.to': true,
+    'feed.animetosho.net': true,
+    'amenzb.moe': true,
+    'aninzb.moe': true,
+    'api.tsukihime.org': true,
+    'storage.tsukihime.org': true
   }
 
   var nativeFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : null
