@@ -84,6 +84,13 @@ jobs:
         working-directory: hayase-tauri
         run: pnpm install --frozen-lockfile
 
+      - name: Rust tests
+        working-directory: hayase-tauri/src-tauri
+        run: cargo test --lib
+
+      - name: Bridge shim tests
+        run: node hayase-tauri/src-tauri/tests/bridge-shim.mjs
+
       - name: Build and publish Tauri app
         uses: tauri-apps/tauri-action@v0
         env:

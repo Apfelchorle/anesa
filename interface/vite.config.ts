@@ -125,12 +125,15 @@ export default defineConfig({
           'script-src': ['self', 'wasm-unsafe-eval', 'blob:', 'trusted-types-eval'],
           'style-src': ['self', 'unsafe-inline'],
           'style-src-attr': ['unsafe-inline'],
-          'img-src': ['self', 'blob:', 'https:', 'data:'],
-          'font-src': ['self'],
-          'connect-src': ['self', 'https:', 'wss:', 'cors:', 'http://localhost:*', 'http://127.0.0.1:*', 'http://*.local:*'],
+          'img-src': ['self', 'asset:', 'http://asset.localhost', 'https://asset.localhost', 'blob:', 'https:', 'data:'],
+          'font-src': ['self', 'data:'],
+          // Tauri IPC uses http://ipc.localhost; custom protocols use their own
+          // origins (cors:// on Linux/macOS, http://cors.localhost on Windows).
+          // Keep this list in sync with src-tauri/tauri.conf.json.
+          'connect-src': ['self', 'ipc:', 'http://ipc.localhost', 'https://ipc.localhost', 'tauri:', 'asset:', 'http://asset.localhost', 'https://asset.localhost', 'cors:', 'http://cors.localhost', 'https://cors.localhost', 'https:', 'wss:', 'ws:', 'http://localhost:*', 'http://127.0.0.1:*', 'http://*.local:*'],
           'frame-src': ['self', 'https://www.youtube-nocookie.com'],
           'worker-src': ['self', 'blob:'],
-          'media-src': ['self', 'https://v.animethemes.moe', 'http://localhost:*', 'http://127.0.0.1:*', 'http://*.local:*', 'blob:', 'https://remotion.media'],
+          'media-src': ['self', 'asset:', 'http://asset.localhost', 'https://asset.localhost', 'https://v.animethemes.moe', 'http://localhost:*', 'http://127.0.0.1:*', 'http://*.local:*', 'blob:', 'https://remotion.media'],
           'object-src': ['none'],
           'base-uri': ['self'],
           'form-action': ['self'],

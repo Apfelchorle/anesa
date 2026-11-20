@@ -2,6 +2,7 @@ mod commands;
 mod events;
 mod player;
 mod protocol;
+mod proxy;
 mod security;
 mod settings;
 mod torrent;
@@ -217,6 +218,7 @@ pub fn run() {
             commands::torrent_download_progress,
             commands::debug,
             commands::profile,
+            proxy::proxy_fetch,
         ]);
 
     builder

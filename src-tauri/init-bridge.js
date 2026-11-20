@@ -10,6 +10,157 @@
     return Promise.reject(new Error('Tauri invoke unavailable'))
   }
 
+  // --- Narrow CORS proxy for first-party APIs -------------------------------
+  // The webview origin (`http://tauri.localhost` on Windows) is not accepted by
+  // several metadata APIs, and some of them send no CORS headers at all. Route
+  // only these exact hosts through the Rust command, which enforces the same
+  // allowlist. Everything else keeps using the native fetch implementation.
+  //
+  // Keep this list in sync with ALLOWED_PROXY_HOSTS in src-tauri/src/proxy.rs.
+  var PROXY_HOSTS = {
+    'graphql.anilist.co': true,
+    'hayase.ani.zip': true,
+    'api.animethemes.moe': true,
+    'api.aniskip.com': true,
+    'api.trace.moe': true,
+    'api.myanimelist.net': true,
+    'myanimelist.net': true,
+    'api.simkl.com': true,
+    'kitsu.app': true
+  }
+
+  var nativeFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : null
+
+  function bytesToBase64(bytes) {
+    var binary = ''
+    var chunk = 0x8000
+    for (var i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk))
+    }
+    return btoa(binary)
+  }
+
+  function base64ToBytes(encoded) {
+    var binary = atob(encoded)
+    var bytes = new Uint8Array(binary.length)
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    return bytes
+  }
+
+  function isProxiedUrl(url) {
+    return url.protocol === 'https:' && PROXY_HOSTS[url.hostname] === true
+  }
+
+  function encodeProxyBody(body, headers) {
+    if (body == null) return Promise.resolve(null)
+    if (typeof body === 'string') {
+      if (!headers.has('content-type')) headers.set('content-type', 'text/plain;charset=UTF-8')
+      return Promise.resolve(new TextEncoder().encode(body))
+    }
+    if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) {
+      if (!headers.has('content-type')) headers.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8')
+      return Promise.resolve(new TextEncoder().encode(body.toString()))
+    }
+    if (typeof Blob !== 'undefined' && body instanceof Blob) {
+      return body.arrayBuffer().then(function (buffer) { return new Uint8Array(buffer) })
+    }
+    if (body instanceof ArrayBuffer) return Promise.resolve(new Uint8Array(body))
+    if (ArrayBuffer.isView(body)) return Promise.resolve(new Uint8Array(body.buffer, body.byteOffset, body.byteLength))
+    // FormData/ReadableStream cannot cross the IPC boundary faithfully.
+    return Promise.resolve(undefined)
+  }
+
+  function proxyResponse(data, url) {
+    var body = null
+    if (data.status !== 204 && data.status !== 205 && data.status !== 304 && data.body_base64) {
+      body = base64ToBytes(data.body_base64)
+    }
+    var response = new Response(body, {
+      status: data.status,
+      statusText: data.status_text || '',
+      headers: data.headers || {}
+    })
+    try {
+      Object.defineProperty(response, 'url', { value: url, configurable: true })
+    } catch (e) {}
+    return response
+  }
+
+  function proxiedFetch(input, init) {
+    init = init || {}
+    var request = null
+    try {
+      if (typeof Request !== 'undefined' && input instanceof Request) request = input
+    } catch (e) {}
+
+    var rawUrl = request ? request.url : String(input)
+    var url
+    try {
+      url = new URL(rawUrl, window.location.href)
+    } catch (e) {
+      return nativeFetch(input, init)
+    }
+    if (!isProxiedUrl(url)) return nativeFetch(input, init)
+
+    var method = String(init.method || (request && request.method) || 'GET').toUpperCase()
+    var headers = new Headers(request ? request.headers : undefined)
+    if (init.headers) {
+      new Headers(init.headers).forEach(function (value, key) { headers.set(key, value) })
+    }
+
+    var body = init.body
+    if (body === undefined && request && method !== 'GET' && method !== 'HEAD' && request.body && !request.bodyUsed) {
+      body = request.arrayBuffer()
+    }
+
+    var signal = init.signal || (request && request.signal)
+    if (signal && signal.aborted) {
+      return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'))
+    }
+
+    return Promise.resolve(body)
+      .then(function (resolvedBody) { return encodeProxyBody(resolvedBody, headers) })
+      .then(function (encoded) {
+        if (encoded === undefined) return nativeFetch(input, init)
+
+        var headerObject = {}
+        headers.forEach(function (value, key) { headerObject[key] = value })
+
+        var args = {
+          request: {
+            url: url.toString(),
+            method: method,
+            headers: headerObject,
+            body_base64: encoded ? bytesToBase64(encoded) : null
+          }
+        }
+
+        var pending = invoke('proxy_fetch', args).then(function (data) {
+          return proxyResponse(data, url.toString())
+        })
+
+        if (!signal) return pending
+
+        return new Promise(function (resolve, reject) {
+          var onAbort = function () {
+            reject(new DOMException('The operation was aborted.', 'AbortError'))
+          }
+          signal.addEventListener('abort', onAbort, { once: true })
+          pending.then(function (response) {
+            signal.removeEventListener('abort', onAbort)
+            resolve(response)
+          }, function (error) {
+            signal.removeEventListener('abort', onAbort)
+            reject(error)
+          })
+        })
+      })
+  }
+
+  if (nativeFetch) {
+    window.fetch = function (input, init) { return proxiedFetch(input, init) }
+  }
+
   var handlers = {
     navigate: null,
     error: null,
@@ -187,7 +338,8 @@
     addTorrent: function (id, mediaID, episode, background) {
       return invoke('add_torrent', {
         id: id,
-        media_id: (mediaID == null ? 0 : mediaID),
+        // Tauri deserializes command arguments from camelCase keys by default.
+        mediaId: (mediaID == null ? 0 : mediaID),
         episode: (episode == null ? 0 : episode),
         background: !!background
       })
@@ -223,7 +375,7 @@
     createHTTPWebSeed: function (hash, url, authorization, fileIndex, rateLimit) {
       return invoke('torrent_create_http_webseed', {
         hash: hash, url: url, authorization: authorization,
-        file_index: fileIndex, rate_limit: rateLimit
+        fileIndex: fileIndex, rateLimit: rateLimit
       })
     },
 
