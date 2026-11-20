@@ -340,6 +340,7 @@ export default class Subtitles {
   lastSubtitleStyle: typeof defaults.subtitleStyle | undefined = undefined
   async _applyStyleOverride (subtitleStyle: typeof defaults.subtitleStyle) {
     if (this.lastSubtitleStyle === subtitleStyle) return
+    if (!this.jassub) return
     if (this.jassub) this.lastSubtitleStyle = subtitleStyle
     if (subtitleStyle !== 'none') {
       const overrideStyle: ASSStyle = {
