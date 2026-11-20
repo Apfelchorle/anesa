@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::num::NonZeroU32;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -115,6 +115,27 @@ fn upload_limit(settings: &ClientSettings) -> Option<NonZeroU32> {
     }
 }
 
+/// Whether a file should be handed to the Matroska parser.
+///
+/// Checks the extension first, then falls back to the EBML magic bytes so
+/// torrents with unusual/missing extensions still get their tracks parsed.
+fn looks_like_matroska(path: &Path) -> bool {
+    const EBML_MAGIC: [u8; 4] = [0x1A, 0x45, 0xDF, 0xA3];
+
+    if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
+        let ext = ext.to_ascii_lowercase();
+        if matches!(ext.as_str(), "mkv" | "webm" | "mka" | "mk3d") {
+            return true;
+        }
+    }
+
+    let mut magic = [0u8; 4];
+    std::fs::File::open(path)
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut magic))
+        .map(|_| magic == EBML_MAGIC)
+        .unwrap_or(false)
+}
+
 #[derive(Clone)]
 pub struct CachedAttachment {
     pub name: String,
@@ -127,6 +148,9 @@ struct CachedMediaMeta {
     tracks: Vec<SubtitleTrack>,
     chapters: Vec<Chapter>,
     attachment_ids: Vec<usize>,
+    /// Whether the on-disk media file was successfully parsed. Failed/partial
+    /// parses are not cached so they can be retried once the file is available.
+    parsed: bool,
 }
 
 pub struct RqbitBackend {
@@ -197,8 +221,13 @@ impl RqbitBackend {
     }
 
     async fn ensure_media_meta(&self, hash: &str, file_id: usize) -> Result<CachedMediaMeta, String> {
-        if let Some(meta) = self.media_meta.read().await.get(&(hash.to_string(), file_id)).cloned() {
-            return Ok(meta);
+        let key = (hash.to_string(), file_id);
+        if let Some(meta) = self.media_meta.read().await.get(&key).cloned() {
+            // Only reuse successfully parsed metadata. Entries that were
+            // created while the file was missing/partial are retried.
+            if meta.parsed {
+                return Ok(meta);
+            }
         }
 
         let handle = self.handle(hash)?;
@@ -215,17 +244,8 @@ impl RqbitBackend {
         let disk_path = download_dir.join(&rel);
 
         // Best-effort: only parse if it looks like MKV/WebM and exists on disk.
-        let is_matroska = rel
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| {
-                let e = e.to_ascii_lowercase();
-                e == "mkv" || e == "webm" || e == "mka" || e == "mk3d"
-            })
-            .unwrap_or(false);
-
         let mut cached = CachedMediaMeta::default();
-        if is_matroska && disk_path.exists() {
+        if disk_path.exists() && looks_like_matroska(&disk_path) {
             match tokio::task::spawn_blocking(move || super::media::parse_mkv_file(&disk_path)).await {
                 Ok(Ok(parsed)) => {
                     let mut att_ids = Vec::with_capacity(parsed.attachments.len());
@@ -247,6 +267,7 @@ impl RqbitBackend {
                         tracks: parsed.tracks,
                         chapters: parsed.chapters,
                         attachment_ids: att_ids,
+                        parsed: true,
                     };
                 }
                 Ok(Err(e)) => {
@@ -258,10 +279,12 @@ impl RqbitBackend {
             }
         }
 
-        self.media_meta
-            .write()
-            .await
-            .insert((hash.to_string(), file_id), cached.clone());
+        // Cache only successful parses. Missing/partial files and parser
+        // failures are retried on the next call, so tracks/chapters/attachments
+        // appear once the torrent has downloaded enough of the file.
+        if cached.parsed {
+            self.media_meta.write().await.insert(key, cached.clone());
+        }
         Ok(cached)
     }
 
@@ -1197,4 +1220,46 @@ pub async fn start_rqbit(
     });
 
     Ok(backend)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_matroska;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "hayase-tauri-{name}-{}.tmp",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn detects_matroska_extensions_case_insensitively() {
+        assert!(looks_like_matroska(std::path::Path::new("movie.MKV")));
+        assert!(looks_like_matroska(std::path::Path::new("video.webm")));
+        assert!(looks_like_matroska(std::path::Path::new("audio.mka")));
+        assert!(looks_like_matroska(std::path::Path::new("video.mk3d")));
+    }
+
+    #[test]
+    fn detects_matroska_by_ebml_magic_with_unusual_extension() {
+        let path = temp_path("mkv-magic");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.write_all(&[0x1A, 0x45, 0xDF, 0xA3, 0x00]).unwrap();
+        drop(file);
+
+        assert!(looks_like_matroska(&path));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rejects_non_matroska_files() {
+        let path = temp_path("not-mkv");
+        std::fs::write(&path, b"definitely not matroska").unwrap();
+
+        assert!(!looks_like_matroska(&path));
+        let _ = std::fs::remove_file(&path);
+    }
 }
