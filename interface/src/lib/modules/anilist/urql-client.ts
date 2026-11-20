@@ -106,7 +106,8 @@ export default new class URQLClient extends Client {
 
   async token () {
     debug('Requesting Anilist token')
-    const res = await native.authAL(`https://anilist.co/api/v2/oauth/authorize?client_id=${get(anilistClientID)}&response_type=token`)
+    const redirect = 'hayase://authorize/'
+    const res = await native.authAL(`https://anilist.co/api/v2/oauth/authorize?client_id=${get(anilistClientID)}&response_type=token&redirect_uri=${encodeURIComponent(redirect)}`)
     const token = res.access_token
     const expires = '' + (Date.now() + (parseInt(res.expires_in) * 1000))
     this.viewer.value = { viewer: this.viewer.value?.viewer ?? null, token, expires }
