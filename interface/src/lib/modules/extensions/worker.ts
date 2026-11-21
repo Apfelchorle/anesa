@@ -1,8 +1,6 @@
 import { finalizer } from 'abslink'
 import { expose } from 'abslink/w3c'
 
-import SUPPORTS from '../settings/supports'
-
 import type { NZBQuery, WebSeedQuery, WebSeedResult, WebSeedFile, AnimeQuery, TorrentResult, TorrentSource, NZBSource, SubtitleSource, Accuracy, WebSeedSource } from './types'
 
 // First-party extension hosts allowed through the Tauri CORS proxy.
@@ -17,6 +15,26 @@ const PROXY_HOSTS: Record<string, true> = {
 }
 
 const nativeFetch = typeof fetch === 'function' ? fetch.bind(globalThis) : undefined
+
+export interface ProxyFetchRequest {
+  url: string
+  method: string
+  headers: Record<string, string>
+  body_base64: string | null
+}
+
+export interface ProxyFetchResult {
+  status: number
+  status_text: string
+  headers: Record<string, string>
+  body_base64: string
+}
+
+export type FetchRelay = (request: ProxyFetchRequest) => Promise<ProxyFetchResult>
+
+// Installed by the main thread via `setFetchRelay`. Workers do not receive
+// Tauri's initialization script, so they cannot call `invoke` themselves.
+let fetchRelay: FetchRelay | null = null
 
 function shouldProxyExtension (input: RequestInfo | URL): boolean {
   try {
@@ -47,35 +65,27 @@ function extBase64ToBytes (base64: string): Uint8Array {
 async function proxiedWorkerFetch (input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   if (!nativeFetch) throw new Error('fetch unavailable')
   if (!shouldProxyExtension(input)) return nativeFetch(input, init)
+  if (!fetchRelay) return nativeFetch(input, init)
 
-  const tauri = (globalThis as any).__TAURI_INTERNALS__
-  if (!tauri?.invoke) return nativeFetch(input, init)
+  const request = new Request(input instanceof Request ? input.clone() : input, init)
+  const method = request.method.toUpperCase()
+  const headers = new Headers(request.headers)
 
-  const request = input instanceof Request ? input : new Request(input, init)
-  const mergedInit: RequestInit = request === input ? { ...(init || {}) } : { ...(init || {}), method: request.method, headers: request.headers }
-  const method = (mergedInit.method || request.method || 'GET').toUpperCase()
-
-  const headers = new Headers(mergedInit.headers || request.headers)
   let body_base64: string | null = null
   if (!['GET', 'HEAD'].includes(method)) {
-    if (mergedInit.body != null) {
-      body_base64 = extBytesToBase64(new Uint8Array(await new Response(mergedInit.body as BodyInit).arrayBuffer()))
-    } else if (request !== input) {
-      body_base64 = extBytesToBase64(new Uint8Array(await request.clone().arrayBuffer()))
-    }
+    const body = new Uint8Array(await request.arrayBuffer())
+    if (body.byteLength > 0) body_base64 = extBytesToBase64(body)
   }
 
   const headerObj: Record<string, string> = {}
   headers.forEach((value, key) => { headerObj[key] = value })
 
-  const result = await tauri.invoke('proxy_fetch', {
-    request: {
-      url: request.url,
-      method,
-      headers: headerObj,
-      body_base64
-    }
-  }) as { status: number, status_text: string, headers: Record<string, string>, body_base64: string }
+  const result = await fetchRelay({
+    url: request.url,
+    method,
+    headers: headerObj,
+    body_base64
+  })
 
   const response = new Response(result.body_base64 ? (extBase64ToBytes(result.body_base64) as any) : null, {
     status: result.status,
@@ -87,20 +97,9 @@ async function proxiedWorkerFetch (input: RequestInfo | URL, init?: RequestInit)
 }
 
 // In workers, prefer the Tauri proxy for allowlisted first-party extension hosts
-// to avoid CORS failures (e.g. nekobt.to announcements/test). Falls back to
-// native fetch if Tauri internals are unavailable.
-const _fetch = SUPPORTS.isIOS
-  ? (input: RequestInfo | URL, init?: RequestInit) => {
-      if (typeof input === 'string') {
-        input = input.replace(/^https?:\/\//, 'cors://')
-      } else if (input instanceof URL) {
-        input = new URL(input.toString().replace(/^https?:\/\//, 'cors://'))
-      } else if (input instanceof Request) {
-        input = new Request(input.url.replace(/^https?:\/\//, 'cors://'), input)
-      }
-      return proxiedWorkerFetch(input, init)
-    }
-  : proxiedWorkerFetch
+// to avoid CORS failures (e.g. nekobt.to announcements/test). The main thread
+// installs the relay; without it, fall back to native fetch.
+const _fetch = proxiedWorkerFetch
 
 // Also patch the worker-global fetch so extension code that calls bare `fetch()`
 // (e.g. in test()) can reach allowlisted hosts without CORS issues.
@@ -203,6 +202,10 @@ type WorkerState =
 export class ExtensionWorker {
   private _state: WorkerState | null = null
   mod!: Promise<{ url: string } & { test: () => Promise<boolean> }>
+
+  setFetchRelay (relay: FetchRelay) {
+    fetchRelay = relay
+  }
 
   construct (code: string, type: 'torrent' | 'nzb' | 'subtitle' | 'http') {
     this.mod = this.load(code, type)

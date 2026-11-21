@@ -1,4 +1,4 @@
-import { releaseProxy, type Remote } from 'abslink'
+import { proxy, releaseProxy, type Remote } from 'abslink'
 import { wrap } from 'abslink/w3c'
 import Debug from 'debug'
 import { set, getMany } from 'idb-keyval'
@@ -11,9 +11,30 @@ import native from '../native.ts'
 import Worker from './worker?worker'
 
 import type { ExtensionConfig } from './types'
-import type extensionLoader from './worker'
+import type extensionLoader, { ProxyFetchRequest, ProxyFetchResult } from './worker'
 
 const debug = Debug('ui:extensions')
+
+type Invoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>
+
+function resolveInvoke (): Invoke | null {
+  const tauri = (globalThis as any).__TAURI__
+  if (tauri?.core?.invoke) return tauri.core.invoke.bind(tauri.core) as Invoke
+
+  const internals = (globalThis as any).__TAURI_INTERNALS__
+  if (internals?.invoke) return internals.invoke.bind(internals) as Invoke
+
+  return null
+}
+
+const invoke = resolveInvoke()
+
+// Workers cannot reach Tauri IPC directly, so allowlisted requests are relayed
+// through the main window. Rust still validates the host and request.
+const relayFetch = invoke
+  ? (request: ProxyFetchRequest): Promise<ProxyFetchResult> =>
+      invoke('proxy_fetch', { request }) as Promise<ProxyFetchResult>
+  : null
 
 type ExtensionID = string
 
@@ -169,6 +190,15 @@ class CodeManager {
     const Loader = wrap<typeof extensionLoader>(new Worker({ name: id })) as unknown as Remote<typeof extensionLoader>
 
     try {
+      // Install before construct so top-level extension code can use fetch().
+      if (relayFetch) {
+        try {
+          await Loader.setFetchRelay(proxy(relayFetch))
+          debug('Fetch relay installed for', id)
+        } catch (e) {
+          debug('Failed to install fetch relay for', id, e)
+        }
+      }
       await Loader.construct(code, type)
       await Loader.loaded()
       if (this.extensions.has(id)) {

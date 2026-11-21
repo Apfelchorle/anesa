@@ -31,7 +31,7 @@ const ALLOWED_PROXY_HOSTS: &[&str] = &[
     "api.simkl.com",
     "kitsu.app",
     // First-party extension hosts (trusted extensions only).
-    "nekobt.to",
+    "nekobt.to", // https://nekobt.to/
     "feed.animetosho.net",
     "amenzb.moe",
     "aninzb.moe",
@@ -252,8 +252,9 @@ async fn read_response(response: reqwest::Response) -> Result<ProxyResponse, Str
     })
 }
 
-/// Proxy a single HTTP request through Rust. Invoked only by the trusted
-/// `init-bridge.js` fetch shim; extension workers do not get this command.
+/// Proxy a single HTTP request through Rust. Invoked by the trusted
+/// `init-bridge.js` fetch shim and the extension worker relay in the main
+/// window; workers never receive `invoke` themselves.
 #[tauri::command]
 pub async fn proxy_fetch(request: ProxyRequest) -> Result<ProxyResponse, String> {
     let mut url = validate_proxy_url(&request.url)?;
