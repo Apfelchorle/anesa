@@ -45,7 +45,7 @@ export const server = new class ServerClient {
   active = writable<Promise<{ media: Media, id: string, episode: number, files: TorrentFile[] } | null>>()
   downloaded = writable(new Set<string>())
 
-  stats = this._timedSafeStore(defaultTorrentInfo, native.torrentInfo, SUPPORTS.isUnderPowered ? 3000 : 200)
+  stats = this._timedSafeStore(defaultTorrentInfo, native.torrentInfo, SUPPORTS.isUnderPowered ? 3000 : 1000)
 
   protocol = this._timedSafeStore(defaultProtocolStatus, native.protocolStatus)
 
@@ -63,18 +63,32 @@ export const server = new class ServerClient {
     return writable<T>(defaultData, set => {
       let listener = 0
 
+      const nextDelay = (hasActive: boolean) => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+          return Math.max(duration, 5000)
+        }
+        if (!skipActive && !hasActive) {
+          return Math.max(duration, 5000)
+        }
+        return duration
+      }
+
       const update = async () => {
+        let hasActive = skipActive
         try {
-          if (skipActive) {
-            set(await fn(''))
-          } else {
-            const id = (await get(this.active))?.id
-            if (id) set(await fn(id))
+          if (typeof document === 'undefined' || document.visibilityState !== 'hidden') {
+            if (skipActive) {
+              set(await fn(''))
+            } else {
+              const id = (await get(this.active))?.id
+              hasActive = !!id
+              if (id) set(await fn(id))
+            }
           }
         } catch (error) {
           showError('Failed to update torrent client data', error, 'torrent-client-update')
         }
-        listener = setTimeout(update, duration)
+        listener = setTimeout(update, nextDelay(hasActive))
       }
 
       update()
@@ -89,8 +103,12 @@ export const server = new class ServerClient {
       debug('restored last torrent', last.id, last.media.title?.userPreferred, last.episode)
     }
 
+    let lastProgress = -1
     this.stats.subscribe((stats) => {
-      native.downloadProgress(stats.progress)
+      if (stats.progress !== lastProgress) {
+        lastProgress = stats.progress
+        native.downloadProgress(stats.progress)
+      }
     })
 
     this.cachedTorrents().catch(error => showError('Failed to load cached torrents', error))
