@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::SubtitleSubscription;
+
 use async_trait::async_trait;
 use librqbit::api::TorrentIdOrHash;
 use librqbit::http_api_types::PeerStatsFilter;
@@ -407,7 +409,7 @@ impl RqbitBackend {
     }
 
     async fn run_subtitle_extractor(
-        self: Arc<Self>,
+        &self,
         hash: &str,
         file_id: usize,
     ) -> Result<(), String> {

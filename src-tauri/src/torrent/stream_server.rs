@@ -24,6 +24,7 @@ use std::task::{Context, Poll};
 use tokio_util::io::ReaderStream;
 use tower_http::cors::{Any, CorsLayer};
 
+use percent_encoding::percent_decode_str;
 use super::rqbit::RqbitBackend;
 use super::subtitles::TapChunk;
 
