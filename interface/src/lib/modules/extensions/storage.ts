@@ -10,8 +10,8 @@ import native from '../native.ts'
 
 import Worker from './worker?worker'
 
-import type { ExtensionConfig } from './types'
-import type extensionLoader, { ProxyFetchRequest, ProxyFetchResult } from './worker'
+import type extensionLoader from './worker'
+import type { ExtensionConfig, ProxyFetchRequest, ProxyFetchResult } from './types'
 
 const debug = Debug('ui:extensions')
 

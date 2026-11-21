@@ -116,3 +116,17 @@ export class SubtitleSource {
   test: () => Promise<boolean>
   single: (query: Omit<AnimeQueryWithFetch, 'resolution' | 'exclusions'>, options?: Record<string, number | string | boolean>) => Promise<Array<{url: string, language: string}>>
 }
+
+export interface ProxyFetchRequest {
+  url: string
+  method: string
+  headers: Record<string, string>
+  body_base64: string | null
+}
+
+export interface ProxyFetchResult {
+  status: number
+  status_text: string
+  headers: Record<string, string>
+  body_base64: string
+}

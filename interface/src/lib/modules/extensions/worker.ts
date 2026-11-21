@@ -1,7 +1,7 @@
 import { finalizer } from 'abslink'
 import { expose } from 'abslink/w3c'
 
-import type { NZBQuery, WebSeedQuery, WebSeedResult, WebSeedFile, AnimeQuery, TorrentResult, TorrentSource, NZBSource, SubtitleSource, Accuracy, WebSeedSource } from './types'
+import type { NZBQuery, WebSeedQuery, WebSeedResult, WebSeedFile, AnimeQuery, TorrentResult, TorrentSource, NZBSource, SubtitleSource, Accuracy, WebSeedSource, ProxyFetchRequest, ProxyFetchResult } from './types'
 
 // First-party extension hosts allowed through the Tauri CORS proxy.
 // Keep in sync with ALLOWED_PROXY_HOSTS in src-tauri/src/proxy.rs.
@@ -15,20 +15,6 @@ const PROXY_HOSTS: Record<string, true> = {
 }
 
 const nativeFetch = typeof fetch === 'function' ? fetch.bind(globalThis) : undefined
-
-export interface ProxyFetchRequest {
-  url: string
-  method: string
-  headers: Record<string, string>
-  body_base64: string | null
-}
-
-export interface ProxyFetchResult {
-  status: number
-  status_text: string
-  headers: Record<string, string>
-  body_base64: string
-}
 
 export type FetchRelay = (request: ProxyFetchRequest) => Promise<ProxyFetchResult>
 
