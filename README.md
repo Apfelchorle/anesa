@@ -34,14 +34,13 @@ Anesa is a desktop anime media client built on **Tauri 2 + Rust** (backend) and 
 
 ## Screenshots
 
-> Place screenshots in `documentation/screenshots/`. The links below are placeholders — replace the filenames with your actual files.
 
-- Home: ![home](documentation/screenshots/home.png)
-- Player: ![player](documentation/screenshots/player.png)
-- Client overview: ![client](documentation/screenshots/client-overview.png)
-- Watch Together: ![w2g](documentation/screenshots/w2g.png)
-- Settings: ![settings](documentation/screenshots/settings.png)
-- Chat: ![chat](documentation/screenshots/chat.png)
+>Player: ![player](documentation/screenshots/player.png)
+> Home: ![home](documentation/screenshots/home.png)
+>Client overview: ![client](documentation/screenshots/client-overview.png)
+> ![episodes](documentation/screenshots/UI-Onepiece.png)
+>Watch Together: ![w2g](documentation/screenshots/w2g.png)
+>Settings: ![settings](documentation/screenshots/settings.png)
 
 ## Quick start
 

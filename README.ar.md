@@ -35,13 +35,12 @@ Anesa هو عميل سطح مكتب لوسائط الأنمي مبني على **
 ## لقطات الشاشة
 
 > ضع لقطات الشاشة في `documentation/screenshots/`. الروابط أدناه عناصر نائبة — استبدل أسماء الملفات بملفاتك الفعلية.
-
-- الرئيسية: ![home](documentation/screenshots/home.png)
-- المشغل: ![player](documentation/screenshots/player.png)
-- نظرة عامة على العميل: ![client](documentation/screenshots/client-overview.png)
-- المشاهدة معاً: ![w2g](documentation/screenshots/w2g.png)
-- الإعدادات: ![settings](documentation/screenshots/settings.png)
-- الدردشة: ![chat](documentation/screenshots/chat.png)
+>المشغل: ![player](documentation/screenshots/player.png)
+>الرئيسية: ![home](documentation/screenshots/home.png)
+>نظرة عامة على العميل: ![client](documentation/screenshots/client-overview.png)
+> ![episodes](documentation/screenshots/UI-Onepiece.png)
+>المشاهدة معاً: ![w2g](documentation/screenshots/w2g.png)
+>الإعدادات: ![settings](documentation/screenshots/settings.png)
 
 ## البدء السريع
 

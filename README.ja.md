@@ -34,14 +34,12 @@ Anesa は **Tauri 2 + Rust** (バックエンド) と **SvelteKit** (フロン�
 
 ## スクリーンショット
 
-> スクリーンショットは `documentation/screenshots/` に配置してください。以下のリンクはプレースホルダーです — 実際のファイル名に置き換えてください。
-
-- ホーム: ![home](documentation/screenshots/home.png)
-- プレーヤー: ![player](documentation/screenshots/player.png)
-- クライアント概要: ![client](documentation/screenshots/client-overview.png)
-- Watch Together: ![w2g](documentation/screenshots/w2g.png)
-- 設定: ![settings](documentation/screenshots/settings.png)
-- チャット: ![chat](documentation/screenshots/chat.png)
+>プレーヤー: ![player](documentation/screenshots/player.png)
+>ホーム: ![home](documentation/screenshots/home.png)
+>クライアント概要: ![client](documentation/screenshots/client-overview.png)
+> ![episodes](documentation/screenshots/UI-Onepiece.png)
+>一緒に視聴:  ![w2g](documentation/screenshots/w2g.png)
+>設定: ![settings](documentation/screenshots/settings.png)
 
 ## クイックスタート
 
