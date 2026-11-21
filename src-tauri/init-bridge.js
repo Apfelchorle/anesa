@@ -35,7 +35,11 @@
     'amenzb.moe': true,
     'aninzb.moe': true,
     'api.tsukihime.org': true,
-    'storage.tsukihime.org': true
+    'storage.tsukihime.org': true,
+    'nyaa.si': true,
+    'releases.moe': true,
+    'subsplease.org': true,
+    'raw.githubusercontent.com': true
   }
 
   var nativeFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : null

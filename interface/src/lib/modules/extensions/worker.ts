@@ -11,7 +11,11 @@ const PROXY_HOSTS: Record<string, true> = {
   'amenzb.moe': true,
   'aninzb.moe': true,
   'api.tsukihime.org': true,
-  'storage.tsukihime.org': true
+  'storage.tsukihime.org': true,
+  'nyaa.si': true,
+  'releases.moe': true,
+  'subsplease.org': true,
+  'raw.githubusercontent.com': true
 }
 
 const nativeFetch = typeof fetch === 'function' ? fetch.bind(globalThis) : undefined

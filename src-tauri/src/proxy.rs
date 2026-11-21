@@ -37,6 +37,10 @@ const ALLOWED_PROXY_HOSTS: &[&str] = &[
     "aninzb.moe",
     "api.tsukihime.org",
     "storage.tsukihime.org",
+    "nyaa.si", // https://nyaa.si/
+    "releases.moe", // https://releases.moe/
+    "subsplease.org", // https://subsplease.org/
+    "raw.githubusercontent.com", // https://raw.githubusercontent.com/
 ];
 
 /// Request headers that are safe and useful to forward. Browser-controlled
