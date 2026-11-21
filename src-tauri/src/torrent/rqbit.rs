@@ -27,7 +27,7 @@ use librqbit::{
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, SeekFrom};
 use tokio::net::TcpListener;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 
 use super::library::{LibraryStore, TorrentCache};
 use super::stream_server;
@@ -148,8 +148,10 @@ struct CachedMediaMeta {
     tracks: Vec<SubtitleTrack>,
     chapters: Vec<Chapter>,
     attachment_ids: Vec<usize>,
-    /// Whether the on-disk media file was successfully parsed. Failed/partial
-    /// parses are not cached so they can be retried once the file is available.
+    /// Nanoseconds per Matroska timestamp tick (normally 1_000_000).
+    timestamp_scale: u64,
+    /// Whether the media file was successfully parsed. Failed/partial
+    /// parses are not cached so they can be retried once more data is available.
     parsed: bool,
 }
 
@@ -165,6 +167,13 @@ pub struct RqbitBackend {
     attachments: RwLock<HashMap<(String, usize, usize), CachedAttachment>>,
     /// Parsed media metadata keyed by (hash, file_id).
     media_meta: RwLock<HashMap<(String, usize), CachedMediaMeta>>,
+    /// Serialises metadata parsing per file so tracks/attachments/chapters
+    /// do not each open a separate torrent stream.
+    media_meta_locks: std::sync::Mutex<HashMap<(String, usize), Arc<tokio::sync::Mutex<()>>>>,
+    /// Live subtitle tap shared with the HTTP stream server.
+    subtitle_taps: super::subtitles::SubtitleTapRegistry,
+    /// Weak handle used by the tap extractor task.
+    self_weak: std::sync::Weak<RqbitBackend>,
     /// Current foreground (UI playback) torrent hash for the implicit desktop session.
     foreground_hash: RwLock<Option<String>>,
 }
@@ -230,6 +239,27 @@ impl RqbitBackend {
             }
         }
 
+        // One parse per file: tracks(), attachments() and chapters() are
+        // normally requested together and each would otherwise open its own
+        // torrent stream.
+        let lock = {
+            let mut locks = self
+                .media_meta_locks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            locks
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock().await;
+
+        if let Some(meta) = self.media_meta.read().await.get(&key).cloned() {
+            if meta.parsed {
+                return Ok(meta);
+            }
+        }
+
         let handle = self.handle(hash)?;
         let rel = handle
             .with_metadata(|m| {
@@ -240,52 +270,194 @@ impl RqbitBackend {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("File id out of range: {file_id}"))?;
 
-        let download_dir = self.download_dir.read().await.clone();
-        let disk_path = download_dir.join(&rel);
+        let is_mkv = super::media::is_matroska_name(&rel);
+        let mut parsed = None;
 
-        // Best-effort: only parse if it looks like MKV/WebM and exists on disk.
-        let mut cached = CachedMediaMeta::default();
-        if disk_path.exists() && looks_like_matroska(&disk_path) {
-            match tokio::task::spawn_blocking(move || super::media::parse_mkv_file(&disk_path)).await {
-                Ok(Ok(parsed)) => {
-                    let mut att_ids = Vec::with_capacity(parsed.attachments.len());
-                    {
-                        let mut map = self.attachments.write().await;
-                        for (idx, att) in parsed.attachments.into_iter().enumerate() {
-                            map.insert(
-                                (hash.to_string(), file_id, idx),
-                                CachedAttachment {
-                                    name: att.filename,
-                                    mime: att.mimetype,
-                                    data: att.data,
-                                },
-                            );
-                            att_ids.push(idx);
-                        }
+        if is_mkv {
+            // A completed file can be parsed directly. Partial files are read
+            // from the torrent stream instead: a sparse/partial file can fail
+            // or return garbage, especially when attachments/chapters sit at
+            // the end of the container.
+            let complete = handle.stats().finished;
+            let download_dir = self.download_dir.read().await.clone();
+            let disk_path = download_dir.join(&rel);
+            if complete && disk_path.exists() {
+                match tokio::task::spawn_blocking(move || super::media::parse_mkv_file(&disk_path)).await
+                {
+                    Ok(Ok(meta)) => parsed = Some(meta),
+                    Ok(Err(e)) => {
+                        log::debug!("MKV parse failed for {hash}/{file_id} on disk: {e}")
                     }
-                    cached = CachedMediaMeta {
-                        tracks: parsed.tracks,
-                        chapters: parsed.chapters,
-                        attachment_ids: att_ids,
-                        parsed: true,
-                    };
+                    Err(e) => log::debug!("MKV parse task failed for {hash}/{file_id}: {e}"),
                 }
-                Ok(Err(e)) => {
-                    log::debug!("MKV parse failed for {hash}/{file_id}: {e}");
-                }
-                Err(e) => {
-                    log::debug!("MKV parse task failed for {hash}/{file_id}: {e}");
+            }
+
+            if parsed.is_none() {
+                match self.parse_stream_metadata(hash, file_id).await {
+                    Ok(meta) => parsed = Some(meta),
+                    Err(e) => log::debug!("MKV stream parse failed for {hash}/{file_id}: {e}"),
                 }
             }
         }
 
+        let mut cached = CachedMediaMeta::default();
+        if let Some(meta) = parsed {
+            let mut att_ids = Vec::with_capacity(meta.attachments.len());
+            {
+                let mut map = self.attachments.write().await;
+                for (idx, att) in meta.attachments.into_iter().enumerate() {
+                    map.insert(
+                        (hash.to_string(), file_id, idx),
+                        CachedAttachment {
+                            name: att.filename,
+                            mime: att.mimetype,
+                            data: att.data,
+                        },
+                    );
+                    att_ids.push(idx);
+                }
+            }
+            cached = CachedMediaMeta {
+                tracks: meta.tracks,
+                chapters: meta.chapters,
+                attachment_ids: att_ids,
+                timestamp_scale: meta.timestamp_scale,
+                parsed: true,
+            };
+        }
+
         // Cache only successful parses. Missing/partial files and parser
         // failures are retried on the next call, so tracks/chapters/attachments
-        // appear once the torrent has downloaded enough of the file.
+        // appear once more data is available.
         if cached.parsed {
             self.media_meta.write().await.insert(key, cached.clone());
         }
         Ok(cached)
+    }
+
+    /// Read `Info`/`Tracks`/`Attachments`/`Chapters` through a ranged torrent
+    /// stream. Only the metadata elements are fetched, not the whole file.
+    async fn parse_stream_metadata(
+        &self,
+        hash: &str,
+        file_id: usize,
+    ) -> Result<super::media::MediaMetadata, String> {
+        let (_, len) = self.file_meta(hash, file_id)?;
+        let stream = self.open_seekable_file_stream(hash, file_id).await?;
+        let handle = tokio::runtime::Handle::current();
+        let task = tokio::task::spawn_blocking(move || {
+            let reader = super::media::SyncStreamReader::new(handle, stream, len);
+            super::media::parse_mkv_owned(reader)
+        });
+
+        match tokio::time::timeout(Duration::from_secs(30), task).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(e)) => Err(format!("metadata task failed: {e}")),
+            Err(_) => Err("timed out reading metadata from torrent stream".into()),
+        }
+    }
+
+    /// Mirror a player read chunk into the subtitle tap.
+    pub fn publish_subtitle_tap(
+        &self,
+        hash: &str,
+        file_id: usize,
+        chunk: super::subtitles::TapChunk,
+    ) {
+        self.subtitle_taps.publish(hash, file_id, chunk);
+    }
+
+    /// Start the live subtitle extractor for a file, if it is not running.
+    pub fn ensure_subtitle_extractor(&self, hash: &str, file_id: usize) {
+        if !self.is_matroska_file(hash, file_id) {
+            return;
+        }
+        if !self.subtitle_taps.claim_extractor(hash, file_id) {
+            return;
+        }
+
+        let Some(this) = self.self_weak.upgrade() else {
+            self.subtitle_taps.release_extractor(hash, file_id);
+            return;
+        };
+        let hash = hash.to_string();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = this.run_subtitle_extractor(&hash, file_id).await {
+                log::debug!("subtitle extractor for {hash}/{file_id} stopped: {e}");
+            }
+            this.subtitle_taps.release_extractor(&hash, file_id);
+        });
+    }
+
+    fn is_matroska_file(&self, hash: &str, file_id: usize) -> bool {
+        self.handle(hash)
+            .ok()
+            .and_then(|handle| {
+                handle
+                    .with_metadata(|m| {
+                        m.file_infos
+                            .get(file_id)
+                            .map(|fi| fi.relative_filename.clone())
+                    })
+                    .ok()
+                    .flatten()
+            })
+            .map(|path| super::media::is_matroska_name(&path))
+            .unwrap_or(false)
+    }
+
+    async fn run_subtitle_extractor(
+        self: Arc<Self>,
+        hash: &str,
+        file_id: usize,
+    ) -> Result<(), String> {
+        let mut meta = None;
+        for attempt in 0..4 {
+            match self.ensure_media_meta(hash, file_id).await {
+                Ok(m) if m.parsed => {
+                    meta = Some(m);
+                    break;
+                }
+                Ok(_) => {}
+                Err(e) => log::debug!("subtitle metadata for {hash}/{file_id}: {e}"),
+            }
+            if attempt < 3 {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+        let Some(meta) = meta else {
+            return Err("media metadata unavailable".into());
+        };
+
+        let tracks: HashMap<u64, bool> = meta
+            .tracks
+            .iter()
+            .filter(|t| t.number > 0)
+            .map(|t| (t.number as u64, t.compressed))
+            .collect();
+        if tracks.is_empty() {
+            return Ok(());
+        }
+
+        let mut extractor = super::subtitles::SubtitleExtractor::new(tracks, meta.timestamp_scale);
+        let (history, mut receiver) = self.subtitle_taps.subscribe(hash, file_id);
+        for chunk in history {
+            let cues = extractor.push(chunk);
+            self.subtitle_taps.publish_cues(hash, file_id, cues);
+        }
+
+        loop {
+            match tokio::time::timeout(Duration::from_secs(30 * 60), receiver.recv()).await {
+                Ok(Ok(chunk)) => {
+                    let cues = extractor.push(chunk);
+                    self.subtitle_taps.publish_cues(hash, file_id, cues);
+                }
+                Ok(Err(broadcast::error::RecvError::Lagged(_))) => extractor.reset(),
+                Ok(Err(broadcast::error::RecvError::Closed)) => break,
+                Err(_) => break,
+            }
+        }
+        Ok(())
     }
 
     fn handle(&self, hash: &str) -> Result<Arc<librqbit::ManagedTorrent>, String> {
@@ -564,6 +736,10 @@ impl RqbitBackend {
             .write()
             .await
             .retain(|(h, _), _| h != old_hash);
+        if let Ok(mut locks) = self.media_meta_locks.lock() {
+            locks.retain(|(h, _), _| h != old_hash);
+        }
+        self.subtitle_taps.clear(old_hash);
         self.attachments
             .write()
             .await
@@ -910,6 +1086,10 @@ impl TorrentBackend for RqbitBackend {
                 .write()
                 .await
                 .retain(|(h, _), _| !h.eq_ignore_ascii_case(hash));
+        if let Ok(mut locks) = self.media_meta_locks.lock() {
+            locks.retain(|(h, _), _| !h.eq_ignore_ascii_case(hash));
+        }
+        self.subtitle_taps.clear(hash);
             self.attachments
                 .write()
                 .await
@@ -958,6 +1138,10 @@ impl TorrentBackend for RqbitBackend {
                     .write()
                     .await
                     .retain(|(h, _), _| !h.eq_ignore_ascii_case(hash));
+        if let Ok(mut locks) = self.media_meta_locks.lock() {
+            locks.retain(|(h, _), _| !h.eq_ignore_ascii_case(hash));
+        }
+        self.subtitle_taps.clear(hash);
                 self.attachments
                     .write()
                     .await
@@ -1120,6 +1304,13 @@ impl TorrentBackend for RqbitBackend {
         Ok(meta.chapters)
     }
 
+    async fn subtitle_stream(&self, hash: &str, id: usize) -> Result<SubtitleSubscription, String> {
+        validate_hash(hash)?;
+        self.ensure_subtitle_extractor(hash, id);
+        let (cues, receiver) = self.subtitle_taps.subscribe_cues(hash, id);
+        Ok(SubtitleSubscription { cues, receiver })
+    }
+
     async fn update_peer_counts(&self, hashes: &[String]) -> Result<Vec<PeerCountScrape>, String> {
         let mut out = Vec::with_capacity(hashes.len());
         for hash in hashes {
@@ -1207,7 +1398,7 @@ pub async fn start_rqbit(
         .port();
     let token = random_token();
 
-    let backend = Arc::new(RqbitBackend {
+    let backend = Arc::new_cyclic(|weak| RqbitBackend {
         session,
         download_dir: RwLock::new(download_dir),
         library: LibraryStore::load(library_path),
@@ -1217,6 +1408,9 @@ pub async fn start_rqbit(
         settings: RwLock::new(settings),
         attachments: RwLock::new(HashMap::new()),
         media_meta: RwLock::new(HashMap::new()),
+        media_meta_locks: std::sync::Mutex::new(HashMap::new()),
+        subtitle_taps: super::subtitles::SubtitleTapRegistry::default(),
+        self_weak: weak.clone(),
         foreground_hash: RwLock::new(None),
     });
 

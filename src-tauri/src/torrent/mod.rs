@@ -13,10 +13,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+pub mod ebml;
 pub mod library;
 pub mod media;
 pub mod rqbit;
 pub mod stream_server;
+pub mod subtitles;
 
 pub use rqbit::start_rqbit;
 
@@ -262,6 +264,24 @@ pub struct Chapter {
     pub text: String,
 }
 
+/// A single embedded subtitle cue, in JASSUB/libass units (milliseconds).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SubtitleCue {
+    #[serde(rename = "trackNumber")]
+    pub track_number: i64,
+    pub text: String,
+    /// Cue start in milliseconds.
+    pub time: f64,
+    /// Cue duration in milliseconds.
+    pub duration: f64,
+}
+
+/// Cached cues plus a live feed for a torrent file.
+pub struct SubtitleSubscription {
+    pub cues: Vec<SubtitleCue>,
+    pub receiver: tokio::sync::broadcast::Receiver<SubtitleCue>,
+}
+
 /// Shape returned by `updatePeerCounts` in the native contract.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PeerCountScrape {
@@ -367,6 +387,9 @@ pub trait TorrentBackend: Send + Sync {
     async fn attachments(&self, hash: &str, id: usize) -> Result<Vec<Attachment>, String>;
     async fn tracks(&self, hash: &str, id: usize) -> Result<Vec<SubtitleTrack>, String>;
     async fn chapters(&self, hash: &str, id: usize) -> Result<Vec<Chapter>, String>;
+    /// Cached embedded-subtitle cues plus a live feed. Starts the tap extractor
+    /// if it is not already running.
+    async fn subtitle_stream(&self, hash: &str, id: usize) -> Result<SubtitleSubscription, String>;
     async fn update_peer_counts(&self, hashes: &[String]) -> Result<Vec<PeerCountScrape>, String>;
 }
 
@@ -499,6 +522,14 @@ impl TorrentBackend for StubTorrentBackend {
 
     async fn chapters(&self, _hash: &str, _id: usize) -> Result<Vec<Chapter>, String> {
         Ok(vec![])
+    }
+
+    async fn subtitle_stream(&self, _hash: &str, _id: usize) -> Result<SubtitleSubscription, String> {
+        let (_tx, rx) = tokio::sync::broadcast::channel(1);
+        Ok(SubtitleSubscription {
+            cues: Vec::new(),
+            receiver: rx,
+        })
     }
 
     async fn update_peer_counts(&self, hashes: &[String]) -> Result<Vec<PeerCountScrape>, String> {

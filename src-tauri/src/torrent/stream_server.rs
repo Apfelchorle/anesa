@@ -17,12 +17,15 @@ use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use percent_encoding::percent_decode_str;
+use tokio::io::{AsyncRead, ReadBuf};
 use serde::Deserialize;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tokio_util::io::ReaderStream;
 use tower_http::cors::{Any, CorsLayer};
 
 use super::rqbit::RqbitBackend;
+use super::subtitles::TapChunk;
 
 #[derive(Clone)]
 struct StreamState {
@@ -149,6 +152,14 @@ async fn stream_handler(
                 Ok(s) => s,
                 Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e),
             };
+            let stream = TapReader::new(
+                stream,
+                Arc::clone(&state.backend),
+                params.hash.clone(),
+                params.file_id,
+                start,
+            );
+            state.backend.ensure_subtitle_extractor(&params.hash, params.file_id);
             response_headers.insert(
                 header::CONTENT_LENGTH,
                 HeaderValue::from_str(&to_take.to_string()).unwrap(),
@@ -169,6 +180,14 @@ async fn stream_handler(
                 Ok(s) => s,
                 Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, &e),
             };
+            let stream = TapReader::new(
+                stream,
+                Arc::clone(&state.backend),
+                params.hash.clone(),
+                params.file_id,
+                0,
+            );
+            state.backend.ensure_subtitle_extractor(&params.hash, params.file_id);
             response_headers.insert(
                 header::CONTENT_LENGTH,
                 HeaderValue::from_str(&len.to_string()).unwrap(),
@@ -242,7 +261,62 @@ async fn attachment_handler(
     (StatusCode::OK, response_headers, Body::from(att.data)).into_response()
 }
 
-/// Build the axum router. The caller binds the listener (loopback only).
+/// Reader wrapper that mirrors every byte the player reads into the subtitle tap.
+struct TapReader {
+    inner: Box<dyn AsyncRead + Send + Unpin>,
+    backend: Arc<RqbitBackend>,
+    hash: String,
+    file_id: usize,
+    offset: u64,
+}
+
+impl TapReader {
+    fn new(
+        inner: Box<dyn AsyncRead + Send + Unpin>,
+        backend: Arc<RqbitBackend>,
+        hash: String,
+        file_id: usize,
+        offset: u64,
+    ) -> Self {
+        Self {
+            inner,
+            backend,
+            hash,
+            file_id,
+            offset,
+        }
+    }
+}
+
+impl AsyncRead for TapReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        match Pin::new(&mut this.inner).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                let filled = buf.filled();
+                let n = filled.len().saturating_sub(before);
+                if n > 0 {
+                    this.backend.publish_subtitle_tap(
+                        &this.hash,
+                        this.file_id,
+                        TapChunk {
+                            offset: this.offset,
+                            data: filled[before..].to_vec(),
+                        },
+                    );
+                    this.offset += n as u64;
+                }
+                Poll::Ready(Ok(()))
+            }
+            other => other,
+        }
+    }
+}
 pub fn router(backend: Arc<RqbitBackend>, token: String) -> Router {
     let state = StreamState { backend, token };
     let cors = CorsLayer::new()

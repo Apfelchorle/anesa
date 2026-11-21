@@ -27,7 +27,7 @@ Tauri v2 + Rust migration of Hayase away from Electron, aimed at 1:1 core functi
 - **Library / cache:** atomic JSON library index + per-hash `.torrent` cache with validated hashes (no path traversal), persisted metadata on add, `library`, `cached_torrents`, `rescan_torrents` (best-effort via cached `.torrent` bytes), `delete_torrents` (removes data + cache/library), `remove_background_torrents`.
 - **Settings:** download/upload rate limits and peer limit applied from `ClientSettings`; DHT can be disabled via `torrentDHT` flag (matching Electron semantics); download directory changes persisted/applied for future torrents.
 - **System checks:** `check_available_space` (disk lookup via `sysinfo`); `check_incoming_connections` currently returns a conservative result (full NAT/DHT reachability parity not yet implemented).
-- **Placeholders:** NZB/HTTP webseeds, EBML attachments/tracks/chapters/subtitles extraction, peer-count scrape, remote host, Chromecast/DLNA, DoH wiring.
+- **Placeholders:** NZB/HTTP webseeds, peer-count scrape, remote host, Chromecast/DLNA, DoH wiring.
 
 ### Native bridge (`bridge/native-bridge.ts`)
 - Installs `window.native` in Tauri (`__TAURI_INTERNALS__`) by mapping to explicit `invoke` commands and `native://*` events; preserves the `hayase-interface` contract (including `addTorrent(id, mediaId, episode, background)`, `updateSettings(ClientSettings)`, `selectDownload(kind)`, `activeTorrents`, `cachedTorrents`, `createNZB(hash,url)`, `createHTTPWebSeed(hash,url,authorization,fileIndex,rateLimit)`, etc.).

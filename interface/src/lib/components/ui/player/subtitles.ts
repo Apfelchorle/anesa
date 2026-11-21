@@ -100,6 +100,7 @@ export default class Subtitles {
   set = get(settings)
 
   _tracks = writable<Record<number | string, { events: Map<string, { text: string, time: number, duration: number }>, meta: SubtitleTrack }>>({})
+  _autoSelected = false
 
   constructor (video: HTMLVideoElement | undefined, otherFiles: TorrentFile[], mediaInfo: MediaInfo, canvas?: HTMLCanvasElement) {
     this.video = video
@@ -118,7 +119,6 @@ export default class Subtitles {
     const subFiles = otherFiles.filter(({ name }) => subRx.test(name))
 
     const fetchAndLoad = async (file: { url: string, name?: string, language?: string }) => {
-      console.log('[subs] fetchAndLoad:', file.url, file.name)
       const res = await fetch(file.url)
       const blob = await res.blob()
       await this.addSingleSubtitleFile(new File([blob], file.name ?? new URL(file.url).pathname.split('/').pop() ?? file.url), file.language)
@@ -142,7 +142,6 @@ export default class Subtitles {
     }
 
     const tracks = native.tracks(this.selected.hash, this.selected.id).then(async tracklist => {
-      console.log('[subs] tracks result:', tracklist)
       for (const track of tracklist) {
         const newtrack = this.track(track.number)
         if (track.header?.startsWith('[Script Info]')) track.type = 'ass'
@@ -204,36 +203,29 @@ export default class Subtitles {
     }).catch(console.error)
 
     native.subtitles(this.selected.hash, this.selected.id, async (subtitle, trackNumber) => {
-      console.log('[subs] cue arrived:', trackNumber, { text: subtitle.text?.slice(0, 60), time: subtitle.time, duration: subtitle.duration })
       await tracks.catch(() => {})
       const { events, meta } = this.track(trackNumber)
-      if (!meta.type) meta.type = 'ass'
+      // Metadata can arrive after playback has started on a cold torrent. In
+      // that case the track entry is empty, so assume ASS (MKV subtitle blocks
+      // already use the libass event format).
+      meta.type ??= 'ass'
       const key = subtitle.text + subtitle.duration.toString() + subtitle.time.toString()
       if (events.has(key)) return
-      // Format the cue as a full timed Dialogue line, mirroring constructSub for
-      // manually-added files (which render via setTrack). processChunk(text,time,duration)
-      // silently no-ops in JASSUB, so we feed complete timed lines through setTrack.
-      const isAss = meta.type === 'ass'
-      let text = subtitle.text ?? ''
-      if (!isAss) {
-        const converted = this.constructSub(subtitle, true, events.size)
-        text = converted.text
-      } else {
-        text = text.replace(/\r?\n/g, '')
-      }
-      const start = toTS(subtitle.time, 2)
-      const end = toTS(subtitle.time + (subtitle.duration || 0), 2)
-      const line = `Dialogue: 0,${start},${end},Default,,0,0,0,,${text}`
-      events.set(key, { text: line, time: subtitle.time, duration: subtitle.duration } as any)
+      const event = this.constructSub(subtitle, meta.type !== 'ass', events.size)
+      events.set(key, event)
 
-      const tn = Number(trackNumber)
-      const wasSelected = Number(this.current.value) === tn
-      if (this.current.value === -1) {
-        this.current.value = tn
+      const wasSelected = Number(this.current.value) === trackNumber
+      // Adopt the first embedded track that actually produces cues if the track
+      // list was empty when playback started.
+      if (this.current.value === -1 && this.set.subtitleLanguage && !this._autoSelected) {
+        this._autoSelected = true
+        await this.selectCaptions(trackNumber)
+        return
       }
-      // Re-render through setTrack (the proven path) when this track is selected.
-      if (wasSelected || this.current.value === -1) {
-        await this._renderTrack(tn)
+      if (wasSelected) {
+        await this.jassub?.ready
+        if (this.jassub?._destroyed) return
+        this.jassub?.renderer.processChunk(event.text, event.time, event.duration)
       }
     }).catch(console.error)
 
@@ -273,7 +265,6 @@ export default class Subtitles {
   }
 
   async addSingleSubtitleFile (file: File, language?: string) {
-    console.log('[subs] addSingleSubtitleFile:', file.name, file.type, file.size)
     const dot = file.name.lastIndexOf('.')
     const extension = file.name.substring(dot + 1).toLowerCase()
     if (!subtitleExtensions.includes(extension)) return
@@ -299,48 +290,30 @@ export default class Subtitles {
   }
 
   async initSubtitleRenderer () {
-    if (this.jassub) { console.log('[subs] initSubtitleRenderer: already exists'); return }
+    if (this.jassub) return
 
-    console.log('[subs] initSubtitleRenderer: creating JASSUB, canvas=', this.canvas)
-    try {
-      this.jassub = new JASSUB({
-        video: this.video,
-        canvas: this.canvas!,
-        subContent: defaultHeader,
-        fonts: this.fonts,
-        maxRenderHeight: parseInt(this.set.subtitleRenderHeight) || 0,
-        defaultFont: STYLE_OVERRIDES[this.set.subtitleStyle].FontName,
-        queryFonts: 'localandremote',
-        workerUrl,
-        modernWasmUrl,
-        wasmUrl,
-        availableFonts: AVAILABLE_FONTS
-      })
+    this.jassub = new JASSUB({
+      video: this.video,
+      canvas: this.canvas!,
+      subContent: defaultHeader,
+      fonts: this.fonts,
+      maxRenderHeight: parseInt(this.set.subtitleRenderHeight) || 0,
+      defaultFont: STYLE_OVERRIDES[this.set.subtitleStyle].FontName,
+      queryFonts: 'localandremote',
+      workerUrl,
+      modernWasmUrl,
+      wasmUrl,
+      availableFonts: AVAILABLE_FONTS
+    })
 
-      await this.jassub.ready
-      console.log('[subs] initSubtitleRenderer: ready')
-
-      await this._applyStyleOverride(this.set.subtitleStyle)
-    } catch (e) {
-      console.error('[subs] initSubtitleRenderer FAILED:', e)
-    }
-  }
-
-  async _renderTrack (trackNumber: number | string) {
-    const track = this._tracks.value[trackNumber]
-    if (!track || !this.jassub) return
     await this.jassub.ready
-    const lines = [...track.events.values()].map(e => (e as any).text).join('\n')
-    const header = track.meta.header?.slice(0, -1) || defaultHeader
-    console.log('[subs] _renderTrack:', trackNumber, 'cues=', track.events.size)
-    await this.jassub.renderer.setTrack(header + (lines ? '\n' + lines : ''))
-    await this.jassub.resize()
+
+    await this._applyStyleOverride(this.set.subtitleStyle)
   }
 
   lastSubtitleStyle: typeof defaults.subtitleStyle | undefined = undefined
   async _applyStyleOverride (subtitleStyle: typeof defaults.subtitleStyle) {
     if (this.lastSubtitleStyle === subtitleStyle) return
-    if (!this.jassub) return
     if (this.jassub) this.lastSubtitleStyle = subtitleStyle
     if (subtitleStyle !== 'none') {
       const overrideStyle: ASSStyle = {
@@ -416,40 +389,24 @@ export default class Subtitles {
   }
 
   async selectCaptions (trackNumber: number | string) {
-    console.log('[subs] selectCaptions:', trackNumber, 'jassub=', !!this.jassub, 'events=', this._tracks.value[trackNumber]?.events.size)
     this.current.value = trackNumber
 
-    if (!this.jassub) {
-      console.log('[subs] selectCaptions: no jassub, initializing')
-      await this.initSubtitleRenderer()
+    if (!this.jassub) return
+
+    await this.jassub.ready
+    if (trackNumber === -1) {
+      await this.jassub.renderer.setTrack(defaultHeader)
+      return await this.jassub.resize()
     }
-    if (!this.jassub) { console.error('[subs] selectCaptions: jassub still null'); return }
 
-    try {
-      await this.jassub.ready
-      if (trackNumber === -1) {
-        await this.jassub.renderer.setTrack(defaultHeader)
-        return await this.jassub.resize()
-      }
+    const track = this._tracks.value[trackNumber]
+    if (!track) return
 
-      const track = this._tracks.value[trackNumber]
-      if (!track) { console.error('[subs] selectCaptions: track not found', trackNumber); return }
+    lastSelectedTrack = track.meta
 
-      lastSelectedTrack = track.meta
-
-      await this.jassub.renderer.setTrack(track.meta.header?.slice(0, -1) || defaultHeader)
-      console.log('[subs] selectCaptions: setTrack done, rendering cues')
-
-      // Render through setTrack with full timed Dialogue lines (the proven path
-      // used by manually-added files). Fall back to any track that has cues when
-      // the clicked track is empty (track-number mismatch between parsers).
-      const eventsTrack = track.events.size ? track : Object.values(this._tracks.value).find(t => t.events.size)
-      if (eventsTrack) {
-        const lines = [...eventsTrack.events.values()].map(e => (e as any).text).join('\n')
-        const header = track.meta.header?.slice(0, -1) || defaultHeader
-        await this.jassub.renderer.setTrack(header + (lines ? '\n' + lines : ''))
-      }
-      const lang = track.meta.language
+    await this.jassub.renderer.setTrack(track.meta.header?.slice(0, -1) || defaultHeader)
+    for (const { text, duration, time } of track.events.values()) await this.jassub.renderer.processChunk(text, time, duration)
+    const lang = track.meta.language
     if (LANGUAGE_OVERRIDES[lang]) {
       const name = LANGUAGE_OVERRIDES[lang]
       await this.jassub.renderer.setDefaultFont(name)
@@ -457,9 +414,6 @@ export default class Subtitles {
       await this.jassub.renderer.setDefaultFont('roboto medium')
     }
     await this.jassub.resize()
-    } catch (e) {
-      console.error('[subs] selectCaptions FAILED:', e)
-    }
   }
 
   destroy () {

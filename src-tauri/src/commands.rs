@@ -5,6 +5,7 @@
 //! Security-sensitive arguments are validated here before touching the engine.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -22,8 +23,8 @@ use crate::security::{
 use crate::settings::{AppSettings, SettingsState};
 use crate::torrent::{
     Attachment, Chapter, ClientSettings, FileInfo, LibraryEntry, PeerCountScrape, PeerInfo,
-    ProtocolStatus, SubtitleTrack, TorrentFile, TorrentInfo, TorrentSource, TorrentState,
-    TrackerStats,
+    ProtocolStatus, SubtitleTrack, TorrentBackend, TorrentFile, TorrentInfo, TorrentSource,
+    TorrentState, TrackerStats,
 };
 
 // --- App / window / shell ---
@@ -573,115 +574,64 @@ pub async fn torrent_subtitles<R: Runtime>(
     validate_infohash(&hash)?;
 
     let backend = torrent.backend();
-    let path = match backend.file_disk_path(&hash, id).await {
-        Ok(Some(p)) => p,
-        Ok(None) => return Ok(()),
-        Err(e) => {
-            log::debug!("torrent_subtitles: could not resolve file path for {hash}/{id}: {e}");
-            return Ok(());
-        }
-    };
-
-    // Spawn extraction so the command returns promptly (frontend awaits it but also
-    // listens for streaming `torrent://subtitle` events).
-    tauri::async_runtime::spawn_blocking(move || {
-        if let Err(e) = emit_embedded_subtitles(&app, &hash, id, &path) {
-            log::debug!("torrent_subtitles: extraction failed for {hash}/{id}: {e}");
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = stream_embedded_subtitles(app, backend, hash, id).await {
+            log::debug!("torrent_subtitles: {e}");
         }
     });
-
     Ok(())
 }
 
-fn emit_embedded_subtitles<R: Runtime>(
-    app: &AppHandle<R>,
-    hash: &str,
+async fn stream_embedded_subtitles<R: Runtime>(
+    app: AppHandle<R>,
+    backend: Arc<dyn TorrentBackend>,
+    hash: String,
     id: usize,
-    path: &Path,
 ) -> Result<(), String> {
-    if !path.exists() {
-        return Err(format!("Media file not found on disk: {}", path.display()));
-    }
+    use crate::torrent::SubtitleSubscription;
+    use tokio::sync::broadcast;
 
-    let file = std::fs::File::open(path)
-        .map_err(|e| format!("Failed to open media file {}: {e}", path.display()))?;
-    let mut mkv = matroska_demuxer::MatroskaFile::open(file)
-        .map_err(|e| format!("Failed to parse Matroska file: {e:?}"))?;
+    let subscription: SubtitleSubscription = backend.subtitle_stream(&hash, id).await?;
+    let SubtitleSubscription { cues, mut receiver } = subscription;
 
-    let track_list: Vec<_> = mkv.tracks().iter().collect();
-    log::debug!(
-        "torrent_subtitles: parsed {} ({} tracks: {:?})",
-        path.display(),
-        track_list.len(),
-        track_list
-            .iter()
-            .map(|t| (t.track_number().get(), format!("{:?}", t.track_type())))
-            .collect::<Vec<_>>()
-    );
-
-    // Note: we deliberately do not filter frames by track number here.
-    // `matroska_demuxer`'s `frame.track` is not guaranteed to equal the MKV
-    // `TrackNumber` used by the `matroska` crate for the UI track list, and
-    // filtering on it previously dropped every cue on affected files. We instead
-    // keep only frames whose payload is valid UTF-8 (subtitle tracks carry text;
-    // video/audio frames are binary).
-
-    let mut frame = matroska_demuxer::Frame::default();
-    let mut emitted: u64 = 0;
-    let mut skipped_binary: u64 = 0;
-    let mut skipped_empty: u64 = 0;
-    loop {
-        match mkv.next_frame(&mut frame) {
-            Ok(true) => {
-                // Subtitle tracks carry text; video/audio frames are binary and
-                // must not be emitted as cues. Skip anything that isn't valid UTF-8.
-                let Ok(text) = String::from_utf8(frame.data.clone()) else {
-                    skipped_binary += 1;
-                    continue;
-                };
-                if text.trim().is_empty() {
-                    skipped_empty += 1;
-                    continue;
-                }
-
-                // matroska-demuxer reports timestamps/durations in nanoseconds.
-                let time = frame.timestamp as f64 / 1_000_000_000.0;
-                let duration = frame
-                    .duration
-                    .map(|d| d as f64 / 1_000_000_000.0)
-                    .unwrap_or(0.0);
-
-                let payload = SubtitleEventPayload {
-                    hash: hash.to_string(),
-                    id,
-                    subtitle: SubtitleEvent {
-                        text,
-                        time,
-                        duration,
-                    },
-                    track_number: frame.track as i64,
-                };
-
-                // Best-effort emit; if the webview is gone, stop.
-                if app.emit(EVENT_TORRENT_SUBTITLE, payload).is_err() {
-                    log::debug!("torrent_subtitles: emit failed, stopping");
-                    return Ok(());
-                }
-                emitted += 1;
-            }
-            Ok(false) => break,
-            Err(e) => {
-                // Partial/incomplete files are common while streaming torrents; emit what we got.
-                log::debug!("torrent_subtitles: stopped reading frames for {hash}/{id}: {e:?}");
-                break;
-            }
+    for cue in cues {
+        if emit_subtitle_cue(&app, &hash, id, cue).is_err() {
+            return Ok(());
         }
     }
 
-    log::debug!(
-        "torrent_subtitles: finished {hash}/{id} — emitted={emitted} skipped_binary={skipped_binary} skipped_empty={skipped_empty}"
-    );
+    loop {
+        match receiver.recv().await {
+            Ok(cue) => {
+                if emit_subtitle_cue(&app, &hash, id, cue).is_err() {
+                    return Ok(());
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
     Ok(())
+}
+
+fn emit_subtitle_cue<R: Runtime>(
+    app: &AppHandle<R>,
+    hash: &str,
+    id: usize,
+    cue: crate::torrent::SubtitleCue,
+) -> Result<(), String> {
+    let payload = SubtitleEventPayload {
+        hash: hash.to_string(),
+        id,
+        subtitle: SubtitleEvent {
+            text: cue.text,
+            time: cue.time,
+            duration: cue.duration,
+        },
+        track_number: cue.track_number,
+    };
+    app.emit(EVENT_TORRENT_SUBTITLE, payload)
+        .map_err(|e| format!("emit failed: {e}"))
 }
 
 #[tauri::command]
