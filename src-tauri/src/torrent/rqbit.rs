@@ -29,7 +29,7 @@ use librqbit::{
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, SeekFrom};
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::RwLock;
 
 use super::library::{LibraryStore, TorrentCache};
 use super::stream_server;
@@ -442,23 +442,31 @@ impl RqbitBackend {
         }
 
         let mut extractor = super::subtitles::SubtitleExtractor::new(tracks, meta.timestamp_scale);
-        let (history, mut receiver) = self.subtitle_taps.subscribe(hash, file_id);
-        for chunk in history {
+
+        // Read the whole file sequentially so every cue is extracted. Relying
+        // on the player's read stream alone misses cues in ranges the player
+        // never reads (or reads out of order), which is what caused only the
+        // first few subtitles to appear. The extractor ignores already-parsed
+        // bytes, so this never duplicates work.
+        let (_, len) = self.file_meta(hash, file_id)?;
+        let mut stream = self.open_seekable_file_stream(hash, file_id).await?;
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; 256 * 1024];
+        let mut offset = 0u64;
+        while offset < len {
+            let n = stream.read(&mut buf).await.map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            let chunk = super::subtitles::TapChunk {
+                offset,
+                data: buf[..n].to_vec(),
+            };
             let cues = extractor.push(chunk);
             self.subtitle_taps.publish_cues(hash, file_id, cues);
+            offset += n as u64;
         }
 
-        loop {
-            match tokio::time::timeout(Duration::from_secs(30 * 60), receiver.recv()).await {
-                Ok(Ok(chunk)) => {
-                    let cues = extractor.push(chunk);
-                    self.subtitle_taps.publish_cues(hash, file_id, cues);
-                }
-                Ok(Err(broadcast::error::RecvError::Lagged(_))) => extractor.reset(),
-                Ok(Err(broadcast::error::RecvError::Closed)) => break,
-                Err(_) => break,
-            }
-        }
         Ok(())
     }
 
